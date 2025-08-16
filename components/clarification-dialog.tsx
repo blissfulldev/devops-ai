@@ -5,7 +5,6 @@ import { Button } from '@/components/ui/button';
 import {
   Dialog,
   DialogContent,
-  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
@@ -35,12 +34,14 @@ export function ClarificationDialog({
   const [selectedOption, setSelectedOption] = useState<string>('');
 
   const handleSubmit = () => {
-    if (!answer.trim() && !selectedOption) return;
+    // Either answer or selectedOption should be provided, not both required
+    const finalAnswer = selectedOption || answer.trim();
+    if (!finalAnswer) return;
 
     const response: ClarificationResponse = {
       id: generateUUID(),
       requestId: request.id,
-      answer: answer.trim() || selectedOption,
+      answer: finalAnswer,
       selectedOption: selectedOption || undefined,
       timestamp: new Date().toISOString(),
     };
@@ -75,18 +76,16 @@ export function ClarificationDialog({
               {request.priority} priority
             </Badge>
           </div>
-          <DialogDescription className="text-left">
-            <div className="flex items-center gap-4 text-sm text-muted-foreground mb-3">
-              <div className="flex items-center gap-1">
-                <User className="size-4" />
-                <span className="font-medium">{request.agentName}</span>
-              </div>
-              <div className="flex items-center gap-1">
-                <Clock className="size-4" />
-                <span>{new Date(request.timestamp).toLocaleTimeString()}</span>
-              </div>
+          <div className="flex items-center gap-4 text-sm text-muted-foreground mb-3">
+            <div className="flex items-center gap-1">
+              <User className="size-4" />
+              <span className="font-medium">{request.agentName}</span>
             </div>
-          </DialogDescription>
+            <div className="flex items-center gap-1">
+              <Clock className="size-4" />
+              <span>{new Date(request.timestamp).toLocaleTimeString()}</span>
+            </div>
+          </div>
         </DialogHeader>
 
         <div className="space-y-4">
@@ -142,7 +141,7 @@ export function ClarificationDialog({
           </Button>
           <Button 
             onClick={handleSubmit}
-            disabled={!answer.trim() && !selectedOption}
+            disabled={!selectedOption && !answer.trim()}
           >
             Submit Response
           </Button>

@@ -120,3 +120,26 @@ export function getTextFromMessage(message: ChatMessage): string {
     })
     .join('');
 }
+
+export function sanitizeUIMessages(messages: ChatMessage[]): ChatMessage[] {
+  return messages.map((message) => ({
+    ...message,
+    parts: (message.parts ?? [])
+      .filter((part): part is NonNullable<typeof part> => part != null)
+      .map((part) => {
+        if (part.type === 'text') {
+          return {
+            ...part,
+            text: part.text || '',
+          };
+        }
+        if (part.type === 'reasoning') {
+          return {
+            ...part,
+            text: part.text || '',
+          };
+        }
+        return part;
+      }),
+  }));
+}

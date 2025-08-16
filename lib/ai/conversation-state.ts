@@ -5,6 +5,7 @@ export interface ConversationState {
   isWaitingForClarification: boolean;
   pendingClarifications: Map<string, ClarificationRequest>;
   clarificationHistory: Map<string, ClarificationResponse>;
+  clarificationQueue: ClarificationRequest[];
   currentAgent?: string;
   workflowStep?: string;
 }
@@ -19,6 +20,7 @@ function getState(chatId: string): ConversationState {
       isWaitingForClarification: false,
       pendingClarifications: new Map(),
       clarificationHistory: new Map(),
+      clarificationQueue: [],
     });
   }
   const state = conversationStates.get(chatId);
@@ -33,8 +35,16 @@ export function addClarificationRequest(
   request: ClarificationRequest,
 ): void {
   const state = getState(chatId);
-  state.pendingClarifications.set(request.id, request);
-  state.isWaitingForClarification = true;
+  
+  if (!state.isWaitingForClarification) {
+    // If not waiting, make this the active clarification
+    state.pendingClarifications.set(request.id, request);
+    state.isWaitingForClarification = true;
+  } else {
+    // If already waiting, add to queue for later
+    state.clarificationQueue.push(request);
+  }
+  
   conversationStates.set(chatId, state);
 }
 
@@ -43,14 +53,31 @@ export function addClarificationResponse(
   response: ClarificationResponse,
 ): void {
   const state = getState(chatId);
+
   state.clarificationHistory.set(response.requestId, response);
   state.pendingClarifications.delete(response.requestId);
-
-  // If no more pending clarifications, resume workflow
+  console.log(
+    'Pending Clarifications:',
+    Array.from(state.pendingClarifications.values()),
+  );
+  console.log(
+    `Adding clarification response for request ${response.requestId} in chat with response ${response.answer}`,
+  );
   if (state.pendingClarifications.size === 0) {
-    state.isWaitingForClarification = false;
+    // If no more pending clarifications, check queue
+    // Process next clarification from queue
+    const nextRequest = state.clarificationQueue.shift();
+    if (nextRequest) {
+      state.pendingClarifications.set(nextRequest.id, nextRequest);
+      state.isWaitingForClarification = true;
+    } else {
+      // No more clarifications, resume workflow
+      state.isWaitingForClarification = false;
+      // Clear current agent to allow fresh start
+      state.currentAgent = undefined;
+      state.workflowStep = undefined;
+    }
   }
-
   conversationStates.set(chatId, state);
 }
 

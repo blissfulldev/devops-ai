@@ -10,6 +10,7 @@ import { myProvider } from '@/lib/ai/providers';
 import { isProductionEnvironment } from '@/lib/constants';
 import type { AgentRunner } from './types';
 import { coreSystemPrompt } from './system-prompts';
+import { sanitizeUIMessages } from '@/lib/utils';
 
 export const runCoreAgent: AgentRunner = ({
   selectedChatModel,
@@ -24,7 +25,7 @@ export const runCoreAgent: AgentRunner = ({
     model: myProvider.languageModel(selectedChatModel),
     system: coreSystemPrompt,
     messages: [
-      ...convertToModelMessages(uiMessages),
+      ...convertToModelMessages(sanitizeUIMessages(uiMessages)),
       { role: 'user', content: input },
     ],
     tools: {
@@ -33,9 +34,9 @@ export const runCoreAgent: AgentRunner = ({
         session,
         dataStream,
         agentName: 'core_agent',
+        chatId: chatId as string,
       }),
     },
-    stopWhen: stepCountIs(5),
     experimental_transform: smoothStream({ chunking: 'word' }),
     experimental_telemetry: {
       isEnabled: isProductionEnvironment,

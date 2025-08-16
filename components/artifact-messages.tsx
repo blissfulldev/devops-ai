@@ -47,7 +47,7 @@ function PureArtifactMessages({
       {messages.map((message, index) => (
         <PreviewMessage
           chatId={chatId}
-          key={message.id}
+          key={`${message.id}-${index}`}
           message={message}
           isLoading={status === 'streaming' && index === messages.length - 1}
           vote={

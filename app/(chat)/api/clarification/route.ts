@@ -89,6 +89,7 @@ export async function GET(request: NextRequest) {
     }
 
     const pendingClarifications = ConversationStateManager.getPendingClarifications(chatId);
+    console.log('Pending clarifications:', pendingClarifications);
     const isWaiting = ConversationStateManager.isWaitingForClarification(chatId);
 
     return NextResponse.json({

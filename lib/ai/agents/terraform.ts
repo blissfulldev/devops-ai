@@ -11,6 +11,7 @@ import { myProvider } from '@/lib/ai/providers';
 import { isProductionEnvironment } from '@/lib/constants';
 import type { AgentRunner } from './types';
 import { terraformSystemPrompt } from './system-prompts';
+import { sanitizeUIMessages } from '@/lib/utils';
 
 export const runTerraformAgent: AgentRunner = ({
   selectedChatModel,
@@ -25,7 +26,7 @@ export const runTerraformAgent: AgentRunner = ({
     model: myProvider.languageModel(selectedChatModel),
     system: terraformSystemPrompt,
     messages: [
-      ...convertToModelMessages(uiMessages),
+      ...convertToModelMessages(sanitizeUIMessages(uiMessages)),
       { role: 'user', content: input },
     ],
     tools: {
@@ -35,6 +36,7 @@ export const runTerraformAgent: AgentRunner = ({
         session,
         dataStream,
         agentName: 'terraform_agent',
+        chatId: chatId as string,
       }),
     },
     stopWhen: stepCountIs(5),
