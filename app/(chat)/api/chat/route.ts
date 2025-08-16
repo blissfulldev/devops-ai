@@ -6,7 +6,6 @@ import {
   createStreamId,
   deleteChatById,
   getChatById,
-  getMessageCountByUserId,
   getMessagesByChatId,
   saveChat,
   saveMessages,
@@ -14,8 +13,6 @@ import {
 import { convertToUIMessages, generateUUID } from '@/lib/utils';
 import { generateTitleFromUserMessage } from '../../actions';
 import { runSupervisorAgent } from '@/lib/ai/agents/supervisor';
-// ...existing imports...
-import { entitlementsByUserType } from '@/lib/ai/entitlements';
 import { postRequestBodySchema, type PostRequestBody } from './schema';
 import { geolocation } from '@vercel/functions';
 import {
@@ -112,6 +109,26 @@ export async function POST(request: Request) {
     }
 
     const messagesFromDb = await getMessagesByChatId({ id });
+    
+    // Validate message structure before processing
+    if (!message.parts || !Array.isArray(message.parts)) {
+      console.error('Invalid message structure - missing or invalid parts:', message);
+      return new ChatSDKError('bad_request:api').toResponse();
+    }
+
+    // Validate each part has the required structure
+    for (const part of message.parts) {
+      if (!part || typeof part !== 'object' || !part.type) {
+        console.error('Invalid message part structure:', part);
+        return new ChatSDKError('bad_request:api').toResponse();
+      }
+      
+      if (part.type === 'text' && (!('text' in part) || typeof part.text !== 'string')) {
+        console.error('Invalid text part - missing or invalid text property:', part);
+        return new ChatSDKError('bad_request:api').toResponse();
+      }
+    }
+
     const uiMessages = [...convertToUIMessages(messagesFromDb), message];
 
     const { longitude, latitude, city, country } = geolocation(request);
@@ -148,6 +165,7 @@ export async function POST(request: Request) {
           session: session as Session,
           dataStream,
           telemetryId: 'supervisor-stream-text',
+          chatId: id,
         });
 
         result.consumeStream();

@@ -19,6 +19,8 @@ import { runCoreAgent } from './core';
 import { createDocument } from '@/lib/ai/tools/create-document';
 import { updateDocument } from '@/lib/ai/tools/update-document';
 import { requestSuggestions } from '@/lib/ai/tools/request-suggestions';
+import { requestClarification } from '@/lib/ai/tools/request-clarification';
+import { ConversationStateManager } from '@/lib/ai/conversation-state';
 import type { Session } from 'next-auth';
 import { supervisorSystemPrompt } from './system-prompts';
 
@@ -29,6 +31,7 @@ type RunSupervisorAgentParams = {
   session: Session;
   dataStream: UIMessageStreamWriter<ChatMessage>;
   telemetryId?: string;
+  chatId: string;
 };
 
 // Registry of child agents the supervisor can call
@@ -45,7 +48,20 @@ export function runSupervisorAgent({
   session,
   dataStream,
   telemetryId = 'supervisor-stream-text',
+  chatId,
 }: RunSupervisorAgentParams) {
+  // Check if we're waiting for clarification before proceeding
+  const isWaiting = ConversationStateManager.isWaitingForClarification(chatId);
+  if (isWaiting) {
+    const pendingClarifications =
+      ConversationStateManager.getPendingClarifications(chatId);
+    dataStream.write({
+      type: 'data-appendMessage',
+      data: `⏸️ Workflow paused. Waiting for clarification on ${pendingClarifications.length} question(s).`,
+      transient: true,
+    });
+  }
+
   const delegate = tool({
     description: `Delegate a subtask to a specialized agent. Available agents:
     - diagram_agent: This allows you to generate AWS diagrams, sequence diagrams, flow diagrams, and class diagrams using Python code.
@@ -57,8 +73,16 @@ export function runSupervisorAgent({
       input: z.string().describe('Task to pass to the agent'),
     }),
     execute: async ({ agent, input }) => {
+      // Check if we should wait for clarification before delegating
+      if (ConversationStateManager.isWaitingForClarification(chatId)) {
+        return `Cannot delegate to ${agent} - waiting for user clarification. Please wait for user response before proceeding.`;
+      }
+
       const runner = agents[agent as keyof typeof agents];
       if (!runner) return `Unknown agent: ${agent}`;
+
+      // Set current agent in state
+      ConversationStateManager.setCurrentAgent(chatId, agent);
 
       const child = runner({
         selectedChatModel,
@@ -67,6 +91,7 @@ export function runSupervisorAgent({
         session,
         dataStream,
         telemetryId: `agent-${agent}`,
+        chatId,
       });
 
       // Stream child tokens into the same UI stream
@@ -90,6 +115,11 @@ export function runSupervisorAgent({
       createDocument: createDocument({ session, dataStream }),
       updateDocument: updateDocument({ session, dataStream }),
       requestSuggestions: requestSuggestions({ session, dataStream }),
+      requestClarification: requestClarification({
+        session,
+        dataStream,
+        agentName: 'supervisor',
+      }),
     },
     experimental_telemetry: {
       isEnabled: isProductionEnvironment,

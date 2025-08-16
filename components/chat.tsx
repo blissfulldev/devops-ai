@@ -20,8 +20,9 @@ import { useSearchParams } from 'next/navigation';
 import { useChatVisibility } from '@/hooks/use-chat-visibility';
 import { useAutoResume } from '@/hooks/use-auto-resume';
 import { ChatSDKError } from '@/lib/errors';
-import type { Attachment, ChatMessage } from '@/lib/types';
+import type { Attachment, ChatMessage, ClarificationResponse } from '@/lib/types';
 import { useDataStream } from './data-stream-provider';
+import { ClarificationManager } from './clarification-manager';
 
 export function Chat({
   id,
@@ -126,6 +127,62 @@ export function Chat({
     setMessages,
   });
 
+  const handleClarificationResponse = async (response: ClarificationResponse) => {
+    try {
+      // Validate response before sending
+      if (!response || !response.answer || !response.requestId) {
+        throw new Error('Invalid clarification response');
+      }
+
+      const res = await fetch('/api/clarification', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          chatId: id,
+          response,
+        }),
+      });
+
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => ({}));
+        throw new Error(errorData.error || 'Failed to submit clarification response');
+      }
+
+      const result = await res.json();
+      
+      if (result.canResume) {
+        // Add the user's response as a message and continue the conversation
+        const userMessage: ChatMessage = {
+          id: response.id,
+          role: 'user',
+          parts: [{ type: 'text', text: `Clarification: ${response.answer}` }],
+          metadata: {
+            createdAt: response.timestamp,
+          },
+        };
+
+        setMessages(prev => [...prev, userMessage]);
+        
+        // Resume the conversation by sending a continuation message
+        sendMessage({
+          role: 'user' as const,
+          parts: [{ 
+            type: 'text', 
+            text: `I've provided the clarification. Please continue with the workflow.` 
+          }],
+        });
+      }
+    } catch (error) {
+      console.error('Error submitting clarification response:', error);
+      toast({
+        type: 'error',
+        description: error instanceof Error ? error.message : 'Failed to submit clarification response',
+      });
+    }
+  };
+
   return (
     <>
       <div className="flex flex-col min-w-0 h-dvh bg-background">
@@ -137,16 +194,27 @@ export function Chat({
           session={session}
         />
 
-        <Messages
-          chatId={id}
-          status={status}
-          votes={votes}
-          messages={messages}
-          setMessages={setMessages}
-          regenerate={regenerate}
-          isReadonly={isReadonly}
-          isArtifactVisible={isArtifactVisible}
-        />
+        <div className="flex-1 overflow-hidden">
+          <Messages
+            chatId={id}
+            status={status}
+            votes={votes}
+            messages={messages}
+            setMessages={setMessages}
+            regenerate={regenerate}
+            isReadonly={isReadonly}
+            isArtifactVisible={isArtifactVisible}
+          />
+        </div>
+
+        {!isReadonly && (
+          <div className="px-4">
+            <ClarificationManager
+              chatId={id}
+              onClarificationResponse={handleClarificationResponse}
+            />
+          </div>
+        )}
 
         <form className="flex mx-auto px-4 bg-background pb-4 md:pb-6 gap-2 w-full md:max-w-3xl">
           {!isReadonly && (

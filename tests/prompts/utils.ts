@@ -1,6 +1,8 @@
 import { generateId, type ModelMessage } from 'ai';
 import { TEST_PROMPTS } from './basic';
-import type { LanguageModelV2StreamPart } from '@ai-sdk/provider';
+// import type { LanguageModelV2StreamPart } from '@ai-sdk/provider';
+// Using any for now to avoid build issues
+type LanguageModelV2StreamPart = any;
 
 export function compareMessages(
   firstMessage: ModelMessage,

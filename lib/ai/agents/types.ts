@@ -10,4 +10,5 @@ export type AgentRunner = (params: {
   session: Session;
   dataStream: UIMessageStreamWriter<ChatMessage>;
   telemetryId?: string;
+  chatId?: string;
 }) => any;

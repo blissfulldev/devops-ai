@@ -3,14 +3,11 @@ import {
   smoothStream,
   stepCountIs,
   convertToModelMessages,
-  type UIMessageStreamWriter,
 } from 'ai';
 import { mcpTools } from '@/lib/ai/tools/mcp/aws-mcp';
+import { requestClarification } from '@/lib/ai/tools/request-clarification';
 import { myProvider } from '@/lib/ai/providers';
 import { isProductionEnvironment } from '@/lib/constants';
-import type { ChatMessage } from '@/lib/types';
-import type { ChatModel } from '@/lib/ai/models';
-import type { Session } from 'next-auth';
 import type { AgentRunner } from './types';
 import { coreSystemPrompt } from './system-prompts';
 
@@ -18,14 +15,10 @@ export const runCoreAgent: AgentRunner = ({
   selectedChatModel,
   uiMessages,
   input,
+  session,
+  dataStream,
   telemetryId = 'agent-core',
-}: {
-  selectedChatModel: ChatModel['id'];
-  uiMessages: ChatMessage[];
-  input: string;
-  session: Session;
-  dataStream: UIMessageStreamWriter<ChatMessage>;
-  telemetryId?: string;
+  chatId,
 }) => {
   const child = streamText({
     model: myProvider.languageModel(selectedChatModel),
@@ -34,7 +27,14 @@ export const runCoreAgent: AgentRunner = ({
       ...convertToModelMessages(uiMessages),
       { role: 'user', content: input },
     ],
-    tools: mcpTools.core,
+    tools: {
+      ...mcpTools.core,
+      requestClarification: requestClarification({
+        session,
+        dataStream,
+        agentName: 'core_agent',
+      }),
+    },
     stopWhen: stepCountIs(5),
     experimental_transform: smoothStream({ chunking: 'word' }),
     experimental_telemetry: {
