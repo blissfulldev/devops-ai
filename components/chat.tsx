@@ -185,6 +185,81 @@ export function Chat({
     }
   };
 
+  // New function to handle batch clarification responses
+  const handleBatchClarificationResponse = async (
+    responses: ClarificationResponse[],
+  ) => {
+    try {
+      console.log('Handling batch clarification responses:', responses);
+
+      // Validate all responses before sending
+      for (const response of responses) {
+        if (!response || !response.answer || !response.requestId) {
+          throw new Error('Invalid clarification response in batch');
+        }
+      }
+
+      const res = await fetch('/api/clarification', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          chatId: id,
+          responses,
+        }),
+      });
+
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => ({}));
+        throw new Error(
+          errorData.error || 'Failed to submit clarification responses',
+        );
+      }
+
+      const result = await res.json();
+
+      if (result.canResume) {
+        // Add all user responses as messages
+        const userMessages: ChatMessage[] = responses.map((response) => ({
+          id: response.id,
+          role: 'user',
+          parts: [
+            {
+              type: 'text',
+              text: `Clarification response: ${response.answer}`,
+            },
+          ],
+          metadata: {
+            createdAt: response.timestamp,
+          },
+        }));
+
+        setMessages((prev) => [...prev, ...userMessages]);
+
+        // Resume the conversation by sending a continuation message
+        sendMessage({
+          role: 'user' as const,
+          parts: [
+            {
+              type: 'text',
+              text: `I have provided ${responses.length} clarification response(s). Please continue with the next step in the workflow.`,
+            },
+          ],
+        });
+      }
+    } catch (error) {
+      console.error('Error submitting batch clarification responses:', error);
+      toast({
+        type: 'error',
+        description:
+          error instanceof Error
+            ? error.message
+            : 'Failed to submit clarification responses',
+      });
+    }
+  };
+
   return (
     <>
       <div className="flex flex-col min-w-0 h-dvh bg-background">
@@ -214,6 +289,7 @@ export function Chat({
             <ClarificationManager
               chatId={id}
               onClarificationResponse={handleClarificationResponse}
+              onBatchClarificationResponse={handleBatchClarificationResponse}
             />
           </div>
         )}

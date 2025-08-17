@@ -14,6 +14,19 @@ const clarificationResponseSchema = z.object({
   }),
 });
 
+const batchClarificationResponseSchema = z.object({
+  chatId: z.string(),
+  responses: z.array(
+    z.object({
+      id: z.string(),
+      requestId: z.string(),
+      answer: z.string(),
+      selectedOption: z.string().optional(),
+      timestamp: z.string(),
+    }),
+  ),
+});
+
 export async function POST(request: NextRequest) {
   try {
     const session = await auth();
@@ -23,28 +36,52 @@ export async function POST(request: NextRequest) {
 
     const body = await request.json();
     
-    // Validate the request body
-    const parseResult = clarificationResponseSchema.safeParse(body);
-    if (!parseResult.success) {
-      console.error('Invalid clarification response schema:', parseResult.error);
-      return NextResponse.json(
-        { error: 'Invalid request format' },
-        { status: 400 }
-      );
+    // Try to parse as batch response first, then fallback to single response
+    let responses: Array<{
+      id: string;
+      requestId: string;
+      answer: string;
+      selectedOption?: string;
+      timestamp: string;
+    }>;
+    let chatId: string;
+
+    const batchParseResult = batchClarificationResponseSchema.safeParse(body);
+    if (batchParseResult.success) {
+      // Handle batch responses
+      chatId = batchParseResult.data.chatId;
+      responses = batchParseResult.data.responses;
+    } else {
+      // Fallback to single response for backward compatibility
+      const singleParseResult = clarificationResponseSchema.safeParse(body);
+      if (!singleParseResult.success) {
+        console.error(
+          'Invalid clarification response schema:',
+          singleParseResult.error,
+        );
+        return NextResponse.json(
+          { error: 'Invalid request format' },
+          { status: 400 },
+        );
+      }
+      chatId = singleParseResult.data.chatId;
+      responses = [singleParseResult.data.response];
     }
 
-    const { chatId, response } = parseResult.data;
-
-    // Additional validation
-    if (!response.answer || response.answer.trim().length === 0) {
-      return NextResponse.json(
-        { error: 'Answer cannot be empty' },
-        { status: 400 }
-      );
+    // Validate all responses
+    for (const response of responses) {
+      if (!response.answer || response.answer.trim().length === 0) {
+        return NextResponse.json(
+          { error: 'Answer cannot be empty' },
+          { status: 400 },
+        );
+      }
     }
 
-    // Store the clarification response
-    ConversationStateManager.addClarificationResponse(chatId, response);
+    // Store all clarification responses
+    responses.forEach((response) => {
+      ConversationStateManager.addClarificationResponse(chatId, response);
+    });
 
     // Check if we can resume the workflow
     const isStillWaiting = ConversationStateManager.isWaitingForClarification(chatId);
@@ -52,9 +89,10 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       success: true,
       canResume: !isStillWaiting,
-      message: isStillWaiting 
-        ? 'Response recorded. Still waiting for other clarifications.'
-        : 'All clarifications received. Workflow can resume.',
+      responsesProcessed: responses.length,
+      message: isStillWaiting
+        ? `${responses.length} response(s) recorded. Still waiting for other clarifications.`
+        : `All ${responses.length} clarification(s) received. Workflow can resume.`,
     });
   } catch (error) {
     console.error('Error handling clarification response:', error);

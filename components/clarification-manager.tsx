@@ -1,71 +1,235 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
+import { Textarea } from '@/components/ui/textarea';
+import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
+import { Label } from '@/components/ui/label';
 import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { MessageCircleQuestion, Clock, AlertCircle } from 'lucide-react';
-import { ClarificationDialog } from './clarification-dialog';
+import { User } from 'lucide-react';
 import type { ClarificationRequest, ClarificationResponse } from '@/lib/types';
 import { useDataStream } from './data-stream-provider';
+
+interface MultipleClarificationDialogProps {
+  requests: ClarificationRequest[];
+  isOpen: boolean;
+  onClose: () => void;
+  onSubmit: (responses: ClarificationResponse[]) => void;
+}
+
+function MultipleClarificationDialog({
+  requests,
+  isOpen,
+  onClose,
+  onSubmit,
+}: MultipleClarificationDialogProps) {
+  const [responses, setResponses] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    // Initialize responses for all requests
+    const initialResponses: Record<string, string> = {};
+    requests.forEach((request) => {
+      initialResponses[request.id] = '';
+    });
+    setResponses(initialResponses);
+  }, [requests]);
+
+  const handleResponseChange = (requestId: string, value: string) => {
+    setResponses((prev) => ({ ...prev, [requestId]: value }));
+  };
+
+  const handleSubmit = () => {
+    // Convert responses to ClarificationResponse format
+    const clarificationResponses: ClarificationResponse[] = Object.entries(
+      responses,
+    )
+      .filter(([, value]) => value.trim())
+      .map(([requestId, response]) => {
+        const request = requests.find((r) => r.id === requestId);
+        return {
+          id: `response-${requestId}-${Date.now()}`,
+          requestId,
+          answer: response.trim(),
+          selectedOption: request?.options?.includes(response.trim())
+            ? response.trim()
+            : undefined,
+          timestamp: new Date().toISOString(),
+        };
+      });
+
+    onSubmit(clarificationResponses);
+    onClose();
+  };
+
+  const canSubmit = Object.values(responses).some((response) =>
+    response.trim(),
+  );
+
+  const answeredCount = Object.values(responses).filter((response) =>
+    response.trim(),
+  ).length;
+
+  return (
+    <Dialog open={isOpen} onOpenChange={onClose}>
+      <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle>Clarification Required</DialogTitle>
+        </DialogHeader>
+
+        <div className="space-y-6">
+          {requests.map((request, index) => (
+            <div key={request.id} className="border rounded-lg p-4">
+              <div className="flex items-start gap-3 mb-3">
+                <User className="h-5 w-5 text-muted-foreground mt-0.5" />
+                <div className="flex-1">
+                  <div className="font-medium text-sm">
+                    Question {index + 1}
+                  </div>
+                  <p className="text-sm text-muted-foreground mt-1">
+                    {request.question}
+                  </p>
+                </div>
+              </div>
+
+              {request.options && request.options.length > 0 ? (
+                <RadioGroup
+                  value={responses[request.id] || ''}
+                  onValueChange={(value) =>
+                    handleResponseChange(request.id, value)
+                  }
+                >
+                  {request.options.map((option, optIndex) => (
+                    <div
+                      key={`${request.id}-option-${optIndex}`}
+                      className="flex items-center space-x-2"
+                    >
+                      <RadioGroupItem
+                        value={option}
+                        id={`${request.id}-${optIndex}`}
+                      />
+                      <Label htmlFor={`${request.id}-${optIndex}`}>
+                        {option}
+                      </Label>
+                    </div>
+                  ))}
+                </RadioGroup>
+              ) : (
+                <Textarea
+                  placeholder="Type your response..."
+                  value={responses[request.id] || ''}
+                  onChange={(e) =>
+                    handleResponseChange(request.id, e.target.value)
+                  }
+                  className="min-h-[80px]"
+                />
+              )}
+            </div>
+          ))}
+        </div>
+
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button onClick={handleSubmit} disabled={!canSubmit}>
+            Submit {answeredCount > 0 ? `${answeredCount} ` : ''}Response
+            {answeredCount === 1 ? '' : 's'}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
 
 interface ClarificationManagerProps {
   chatId: string;
   onClarificationResponse: (response: ClarificationResponse) => void;
+  onBatchClarificationResponse?: (responses: ClarificationResponse[]) => void;
 }
 
 export function ClarificationManager({
   chatId,
   onClarificationResponse,
+  onBatchClarificationResponse,
 }: ClarificationManagerProps) {
-  const [pendingRequests, setPendingRequests] = useState<ClarificationRequest[]>([]);
-  const [selectedRequest, setSelectedRequest] = useState<ClarificationRequest | null>(null);
+  const [pendingRequests, setPendingRequests] = useState<
+    ClarificationRequest[]
+  >([]);
   const [isDialogOpen, setIsDialogOpen] = useState(false);
+  const [answeredRequestIds, setAnsweredRequestIds] = useState<Set<string>>(
+    new Set(),
+  );
   const { dataStream } = useDataStream();
 
   // Listen for clarification requests from the data stream
   useEffect(() => {
     const clarificationRequests = dataStream
-      .filter(part => part.type === 'data-clarificationRequest')
-      .map(part => part.data as ClarificationRequest);
+      .filter((part) => part.type === 'data-clarificationRequest')
+      .map((part) => part.data as ClarificationRequest)
+      .filter((req) => !answeredRequestIds.has(req.id)); // Filter out already answered requests
+
+    console.log(
+      'Data stream clarification requests (after filtering):',
+      clarificationRequests,
+    );
+    console.log('Answered request IDs:', Array.from(answeredRequestIds));
 
     if (clarificationRequests.length > 0) {
       setPendingRequests((prev) => {
+        console.log('Previous pending requests:', prev);
         const newRequests = clarificationRequests.filter(
           (req) => !prev.some((existing) => existing.id === req.id),
         );
-        return [...prev, ...newRequests];
+        console.log('New requests to add:', newRequests);
+        const updatedRequests = [...prev, ...newRequests];
+        console.log('Updated pending requests:', updatedRequests);
+
+        // Auto-open dialog when new requests arrive
+        if (newRequests.length > 0 && !isDialogOpen) {
+          console.log('Auto-opening dialog for new requests');
+          setIsDialogOpen(true);
+        }
+
+        return updatedRequests;
       });
     }
-  }, [dataStream]);
+  }, [dataStream, isDialogOpen, answeredRequestIds]);
 
-  const handleRequestClick = (request: ClarificationRequest) => {
-    setSelectedRequest(request);
-    setIsDialogOpen(true);
-  };
+  const handleClarificationSubmit = (responses: ClarificationResponse[]) => {
+    console.log('handleClarificationSubmit called with responses:', responses);
+    console.log('Current pendingRequests before removal:', pendingRequests);
 
-  const handleClarificationSubmit = (response: ClarificationResponse) => {
-    // Remove the request from pending list
-    setPendingRequests(prev => 
-      prev.filter(req => req.id !== response.requestId)
-    );
-    
-    // Notify parent component
-    onClarificationResponse(response);
-    
-    setSelectedRequest(null);
-  };
+    // Close dialog first
+    setIsDialogOpen(false);
 
-  const getPriorityColor = (priority: string) => {
-    switch (priority) {
-      case 'high':
-        return 'bg-red-100 text-red-800 border-red-200';
-      case 'medium':
-        return 'bg-yellow-100 text-yellow-800 border-yellow-200';
-      case 'low':
-        return 'bg-green-100 text-green-800 border-green-200';
-      default:
-        return 'bg-gray-100 text-gray-800 border-gray-200';
+    // Track answered request IDs to prevent them from being re-added
+    const answeredIds = responses.map((res) => res.requestId);
+    setAnsweredRequestIds((prev) => new Set([...prev, ...answeredIds]));
+    console.log('Added answered request IDs:', answeredIds);
+
+    // Remove the answered requests from pending list
+    setPendingRequests((prev) => {
+      const filteredRequests = prev.filter(
+        (req) => !responses.some((res) => res.requestId === req.id),
+      );
+      console.log('Pending requests after filtering:', filteredRequests);
+      return filteredRequests;
+    });
+
+    // Use batch handler if available, otherwise fall back to individual calls
+    if (onBatchClarificationResponse && responses.length > 1) {
+      onBatchClarificationResponse(responses);
+    } else {
+      // Notify parent component for each response (backward compatibility)
+      responses.forEach((response) => {
+        onClarificationResponse(response);
+      });
     }
   };
 
@@ -74,66 +238,11 @@ export function ClarificationManager({
   }
 
   return (
-    <>
-      <div className="space-y-3 mb-4">
-        <div className="flex items-center gap-2 text-amber-600">
-          <AlertCircle className="size-5" />
-          <span className="font-medium">
-            {pendingRequests.length} clarification{pendingRequests.length > 1 ? 's' : ''} needed
-          </span>
-        </div>
-        
-        {pendingRequests.map((request) => (
-          <Card key={request.id} className="border-l-4 border-l-amber-400">
-            <CardHeader className="pb-3">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <MessageCircleQuestion className="size-4 text-blue-600" />
-                  <CardTitle className="text-sm font-medium">
-                    Clarification from {request.agentName}
-                  </CardTitle>
-                  <Badge className={getPriorityColor(request.priority)}>
-                    {request.priority}
-                  </Badge>
-                </div>
-                <div className="flex items-center gap-1 text-xs text-muted-foreground">
-                  <Clock className="size-3" />
-                  <span>{new Date(request.timestamp).toLocaleTimeString()}</span>
-                </div>
-              </div>
-              <CardDescription className="text-sm">
-                {request.question}
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="pt-0">
-              <div className="flex justify-between items-center">
-                <p className="text-xs text-muted-foreground line-clamp-2">
-                  {request.context}
-                </p>
-                <Button 
-                  size="sm" 
-                  onClick={() => handleRequestClick(request)}
-                  className="ml-2"
-                >
-                  Respond
-                </Button>
-              </div>
-            </CardContent>
-          </Card>
-        ))}
-      </div>
-
-      {selectedRequest && (
-        <ClarificationDialog
-          request={selectedRequest}
-          isOpen={isDialogOpen}
-          onClose={() => {
-            setIsDialogOpen(false);
-            setSelectedRequest(null);
-          }}
-          onSubmit={handleClarificationSubmit}
-        />
-      )}
-    </>
+    <MultipleClarificationDialog
+      requests={pendingRequests}
+      isOpen={isDialogOpen}
+      onClose={() => setIsDialogOpen(false)}
+      onSubmit={handleClarificationSubmit}
+    />
   );
 }
