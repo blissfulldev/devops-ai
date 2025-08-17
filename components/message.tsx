@@ -99,215 +99,223 @@ const PurePreviewMessage = ({
               </div>
             )}
 
-            {message.parts?.map((part, index) => {
-              const { type } = part;
-              const key = `message-${message.id}-part-${index}`;
+            {(message.parts ?? [])
+              .filter((p): p is NonNullable<typeof p> => p != null)
+              .map((part, index) => {
+                const { type } = part;
+                const key = `message-${message.id}-part-${index}`;
 
-              if (type === 'reasoning' && part.text?.trim().length > 0) {
-                return (
-                  <MessageReasoning
-                    key={key}
-                    isLoading={isLoading}
-                    reasoning={part.text}
-                  />
-                );
-              }
-
-              if (type === 'text') {
-                if (mode === 'view') {
+                if (type === 'reasoning' && part.text?.trim().length > 0) {
                   return (
-                    <div key={key} className="flex flex-row gap-2 items-start">
-                      {message.role === 'user' && !isReadonly && (
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <Button
-                              data-testid="message-edit-button"
-                              variant="ghost"
-                              className="px-2 h-fit rounded-full text-muted-foreground opacity-0 group-hover/message:opacity-100"
-                              onClick={() => {
-                                setMode('edit');
-                              }}
-                            >
-                              <PencilEditIcon />
-                            </Button>
-                          </TooltipTrigger>
-                          <TooltipContent>Edit message</TooltipContent>
-                        </Tooltip>
-                      )}
-
-                      <div
-                        data-testid="message-content"
-                        className={cn('flex flex-col gap-4', {
-                          'bg-primary text-primary-foreground px-3 py-2 rounded-xl':
-                            message.role === 'user',
-                        })}
-                      >
-                        <Markdown>{sanitizeText(part.text)}</Markdown>
-                      </div>
-                    </div>
+                    <MessageReasoning
+                      key={key}
+                      isLoading={isLoading}
+                      reasoning={part.text}
+                    />
                   );
                 }
 
-                if (mode === 'edit') {
-                  return (
-                    <div key={key} className="flex flex-row gap-2 items-start">
-                      <div className="size-8" />
-
-                      <MessageEditor
-                        key={message.id}
-                        message={message}
-                        setMode={setMode}
-                        setMessages={setMessages}
-                        regenerate={regenerate}
-                      />
-                    </div>
-                  );
-                }
-              }
-
-              if (type === 'tool-getWeather') {
-                const { toolCallId, state } = part;
-
-                if (state === 'input-available') {
-                  return (
-                    <div key={toolCallId} className="skeleton">
-                      <Weather />
-                    </div>
-                  );
-                }
-
-                if (state === 'output-available') {
-                  const { output } = part;
-                  return (
-                    <div key={toolCallId}>
-                      <Weather weatherAtLocation={output} />
-                    </div>
-                  );
-                }
-              }
-
-              if (type === 'tool-createDocument') {
-                const { toolCallId, state } = part;
-
-                if (state === 'input-available') {
-                  const { input } = part;
-                  return (
-                    <div key={toolCallId}>
-                      <DocumentPreview isReadonly={isReadonly} args={input} />
-                    </div>
-                  );
-                }
-
-                if (state === 'output-available') {
-                  const { output } = part;
-
-                  if ('error' in output) {
+                if (type === 'text') {
+                  if (mode === 'view') {
                     return (
                       <div
-                        key={toolCallId}
-                        className="text-red-500 p-2 border rounded"
+                        key={key}
+                        className="flex flex-row gap-2 items-start"
                       >
-                        Error: {String(output.error)}
+                        {message.role === 'user' && !isReadonly && (
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Button
+                                data-testid="message-edit-button"
+                                variant="ghost"
+                                className="px-2 h-fit rounded-full text-muted-foreground opacity-0 group-hover/message:opacity-100"
+                                onClick={() => {
+                                  setMode('edit');
+                                }}
+                              >
+                                <PencilEditIcon />
+                              </Button>
+                            </TooltipTrigger>
+                            <TooltipContent>Edit message</TooltipContent>
+                          </Tooltip>
+                        )}
+
+                        <div
+                          data-testid="message-content"
+                          className={cn('flex flex-col gap-4', {
+                            'bg-primary text-primary-foreground px-3 py-2 rounded-xl':
+                              message.role === 'user',
+                          })}
+                        >
+                          <Markdown>{sanitizeText(part.text || '')}</Markdown>
+                        </div>
                       </div>
                     );
                   }
 
-                  return (
-                    <div key={toolCallId}>
-                      <DocumentPreview
-                        isReadonly={isReadonly}
-                        result={output}
-                      />
-                    </div>
-                  );
-                }
-              }
-
-              if (type === 'tool-updateDocument') {
-                const { toolCallId, state } = part;
-
-                if (state === 'input-available') {
-                  const { input } = part;
-
-                  return (
-                    <div key={toolCallId}>
-                      <DocumentToolCall
-                        type="update"
-                        args={input}
-                        isReadonly={isReadonly}
-                      />
-                    </div>
-                  );
-                }
-
-                if (state === 'output-available') {
-                  const { output } = part;
-
-                  if ('error' in output) {
+                  if (mode === 'edit') {
                     return (
                       <div
-                        key={toolCallId}
-                        className="text-red-500 p-2 border rounded"
+                        key={key}
+                        className="flex flex-row gap-2 items-start"
                       >
-                        Error: {String(output.error)}
+                        <div className="size-8" />
+
+                        <MessageEditor
+                          key={message.id}
+                          message={message}
+                          setMode={setMode}
+                          setMessages={setMessages}
+                          regenerate={regenerate}
+                        />
+                      </div>
+                    );
+                  }
+                }
+
+                if (type === 'tool-getWeather') {
+                  const { toolCallId, state } = part;
+
+                  if (state === 'input-available') {
+                    return (
+                      <div key={toolCallId} className="skeleton">
+                        <Weather />
                       </div>
                     );
                   }
 
-                  return (
-                    <div key={toolCallId}>
-                      <DocumentToolResult
-                        type="update"
-                        result={output}
-                        isReadonly={isReadonly}
-                      />
-                    </div>
-                  );
-                }
-              }
-
-              if (type === 'tool-requestSuggestions') {
-                const { toolCallId, state } = part;
-
-                if (state === 'input-available') {
-                  const { input } = part;
-                  return (
-                    <div key={toolCallId}>
-                      <DocumentToolCall
-                        type="request-suggestions"
-                        args={input}
-                        isReadonly={isReadonly}
-                      />
-                    </div>
-                  );
-                }
-
-                if (state === 'output-available') {
-                  const { output } = part;
-
-                  if ('error' in output) {
+                  if (state === 'output-available') {
+                    const { output } = part;
                     return (
-                      <div
-                        key={toolCallId}
-                        className="text-red-500 p-2 border rounded"
-                      >
-                        Error: {String(output.error)}
+                      <div key={toolCallId}>
+                        <Weather weatherAtLocation={output} />
+                      </div>
+                    );
+                  }
+                }
+
+                if (type === 'tool-createDocument') {
+                  const { toolCallId, state } = part;
+
+                  if (state === 'input-available') {
+                    const { input } = part;
+                    return (
+                      <div key={toolCallId}>
+                        <DocumentPreview isReadonly={isReadonly} args={input} />
                       </div>
                     );
                   }
 
-                  return (
-                    <div key={toolCallId}>
-                      <DocumentToolResult
-                        type="request-suggestions"
-                        result={output}
-                        isReadonly={isReadonly}
-                      />
-                    </div>
-                  );
+                  if (state === 'output-available') {
+                    const { output } = part;
+
+                    if ('error' in output) {
+                      return (
+                        <div
+                          key={toolCallId}
+                          className="text-red-500 p-2 border rounded"
+                        >
+                          Error: {String(output.error)}
+                        </div>
+                      );
+                    }
+
+                    return (
+                      <div key={toolCallId}>
+                        <DocumentPreview
+                          isReadonly={isReadonly}
+                          result={output}
+                        />
+                      </div>
+                    );
+                  }
                 }
-              }
-            })}
+
+                if (type === 'tool-updateDocument') {
+                  const { toolCallId, state } = part;
+
+                  if (state === 'input-available') {
+                    const { input } = part;
+
+                    return (
+                      <div key={toolCallId}>
+                        <DocumentToolCall
+                          type="update"
+                          args={input}
+                          isReadonly={isReadonly}
+                        />
+                      </div>
+                    );
+                  }
+
+                  if (state === 'output-available') {
+                    const { output } = part;
+
+                    if ('error' in output) {
+                      return (
+                        <div
+                          key={toolCallId}
+                          className="text-red-500 p-2 border rounded"
+                        >
+                          Error: {String(output.error)}
+                        </div>
+                      );
+                    }
+
+                    return (
+                      <div key={toolCallId}>
+                        <DocumentToolResult
+                          type="update"
+                          result={output}
+                          isReadonly={isReadonly}
+                        />
+                      </div>
+                    );
+                  }
+                }
+
+                if (type === 'tool-requestSuggestions') {
+                  const { toolCallId, state } = part;
+
+                  if (state === 'input-available') {
+                    const { input } = part;
+                    return (
+                      <div key={toolCallId}>
+                        <DocumentToolCall
+                          type="request-suggestions"
+                          args={input}
+                          isReadonly={isReadonly}
+                        />
+                      </div>
+                    );
+                  }
+
+                  if (state === 'output-available') {
+                    const { output } = part;
+
+                    if ('error' in output) {
+                      return (
+                        <div
+                          key={toolCallId}
+                          className="text-red-500 p-2 border rounded"
+                        >
+                          Error: {String(output.error)}
+                        </div>
+                      );
+                    }
+
+                    return (
+                      <div key={toolCallId}>
+                        <DocumentToolResult
+                          type="request-suggestions"
+                          result={output}
+                          isReadonly={isReadonly}
+                        />
+                      </div>
+                    );
+                  }
+                }
+              })}
 
             {!isReadonly && (
               <MessageActions

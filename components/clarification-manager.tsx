@@ -30,9 +30,9 @@ export function ClarificationManager({
       .map(part => part.data as ClarificationRequest);
 
     if (clarificationRequests.length > 0) {
-      setPendingRequests(prev => {
+      setPendingRequests((prev) => {
         const newRequests = clarificationRequests.filter(
-          req => !prev.some(existing => existing.id === req.id)
+          (req) => !prev.some((existing) => existing.id === req.id),
         );
         return [...prev, ...newRequests];
       });

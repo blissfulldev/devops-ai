@@ -123,9 +123,18 @@ export async function POST(request: Request) {
         return new ChatSDKError('bad_request:api').toResponse();
       }
       
-      if (part.type === 'text' && (!('text' in part) || typeof part.text !== 'string')) {
-        console.error('Invalid text part - missing or invalid text property:', part);
-        return new ChatSDKError('bad_request:api').toResponse();
+      if (part.type === 'text') {
+        if (
+          !('text' in part) ||
+          typeof part.text !== 'string' ||
+          part.text.trim().length === 0
+        ) {
+          console.error(
+            'Invalid text part - missing, invalid, or empty text property:',
+            part,
+          );
+          return new ChatSDKError('bad_request:api').toResponse();
+        }
       }
     }
 
@@ -161,7 +170,6 @@ export async function POST(request: Request) {
         const result = runSupervisorAgent({
           selectedChatModel,
           uiMessages,
-          requestHints,
           session: session as Session,
           dataStream,
           telemetryId: 'supervisor-stream-text',

@@ -10,12 +10,12 @@ import { myProvider } from '@/lib/ai/providers';
 import { isProductionEnvironment } from '@/lib/constants';
 import type { AgentRunner } from './types';
 import { coreSystemPrompt } from './system-prompts';
+import { sanitizeUIMessages } from '@/lib/utils';
 
 export const runCoreAgent: AgentRunner = ({
   selectedChatModel,
   uiMessages,
   input,
-  session,
   dataStream,
   telemetryId = 'agent-core',
   chatId,
@@ -24,18 +24,18 @@ export const runCoreAgent: AgentRunner = ({
     model: myProvider.languageModel(selectedChatModel),
     system: coreSystemPrompt,
     messages: [
-      ...convertToModelMessages(uiMessages),
+      ...convertToModelMessages(sanitizeUIMessages(uiMessages)),
       { role: 'user', content: input },
     ],
+    stopWhen: stepCountIs(2),
     tools: {
       ...mcpTools.core,
       requestClarification: requestClarification({
-        session,
         dataStream,
         agentName: 'core_agent',
+        chatId: chatId as string,
       }),
     },
-    stopWhen: stepCountIs(5),
     experimental_transform: smoothStream({ chunking: 'word' }),
     experimental_telemetry: {
       isEnabled: isProductionEnvironment,

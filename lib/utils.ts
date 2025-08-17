@@ -1,6 +1,6 @@
 import type {
-  CoreAssistantMessage,
-  CoreToolMessage,
+  AssistantModelMessage,
+  ToolModelMessage,
   UIMessage,
   UIMessagePart,
 } from 'ai';
@@ -63,7 +63,7 @@ export function generateUUID(): string {
   });
 }
 
-type ResponseMessageWithoutId = CoreToolMessage | CoreAssistantMessage;
+type ResponseMessageWithoutId = ToolModelMessage | AssistantModelMessage;
 type ResponseMessage = ResponseMessageWithoutId & { id: string };
 
 export function getMostRecentUserMessage(messages: Array<UIMessage>) {
@@ -119,4 +119,27 @@ export function getTextFromMessage(message: ChatMessage): string {
       return '';
     })
     .join('');
+}
+
+export function sanitizeUIMessages(messages: ChatMessage[]): ChatMessage[] {
+  return messages.map((message) => ({
+    ...message,
+    parts: (message.parts ?? [])
+      .filter((part): part is NonNullable<typeof part> => part != null)
+      .map((part) => {
+        if (part.type === 'text') {
+          return {
+            ...part,
+            text: part.text || '',
+          };
+        }
+        if (part.type === 'reasoning') {
+          return {
+            ...part,
+            text: part.text || '',
+          };
+        }
+        return part;
+      }),
+  }));
 }

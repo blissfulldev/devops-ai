@@ -129,6 +129,8 @@ export function Chat({
 
   const handleClarificationResponse = async (response: ClarificationResponse) => {
     try {
+      console.log('Handling clarification response:', response);
+      
       // Validate response before sending
       if (!response || !response.answer || !response.requestId) {
         throw new Error('Invalid clarification response');
@@ -157,7 +159,7 @@ export function Chat({
         const userMessage: ChatMessage = {
           id: response.id,
           role: 'user',
-          parts: [{ type: 'text', text: `Clarification: ${response.answer}` }],
+          parts: [{ type: 'text', text: `Clarification response: ${response.answer}` }],
           metadata: {
             createdAt: response.timestamp,
           },
@@ -170,7 +172,7 @@ export function Chat({
           role: 'user' as const,
           parts: [{ 
             type: 'text', 
-            text: `I've provided the clarification. Please continue with the workflow.` 
+            text: `I have provided the clarification. Please continue with the next step in the workflow.` 
           }],
         });
       }

@@ -11,12 +11,12 @@ import { myProvider } from '@/lib/ai/providers';
 import { isProductionEnvironment } from '@/lib/constants';
 import type { AgentRunner } from './types';
 import { terraformSystemPrompt } from './system-prompts';
+import { sanitizeUIMessages } from '@/lib/utils';
 
 export const runTerraformAgent: AgentRunner = ({
   selectedChatModel,
   uiMessages,
   input,
-  session,
   dataStream,
   telemetryId = 'agent-terraform',
   chatId,
@@ -25,16 +25,16 @@ export const runTerraformAgent: AgentRunner = ({
     model: myProvider.languageModel(selectedChatModel),
     system: terraformSystemPrompt,
     messages: [
-      ...convertToModelMessages(uiMessages),
+      ...convertToModelMessages(sanitizeUIMessages(uiMessages)),
       { role: 'user', content: input },
     ],
     tools: {
       ...mcpTools.terraform,
       writeTerraformToDisk: writeTerraformToDisk(),
       requestClarification: requestClarification({
-        session,
         dataStream,
         agentName: 'terraform_agent',
+        chatId: chatId as string,
       }),
     },
     stopWhen: stepCountIs(5),
