@@ -62,6 +62,7 @@ export interface ClarificationRequest {
 }
 
 export interface ClarificationResponse {
+  text?: string;
   id: string;
   requestId: string;
   answer: string;

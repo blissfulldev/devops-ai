@@ -5,69 +5,84 @@ const CORE_URL = 'http://localhost:8000/sse';
 const DIAGRAM_URL = 'http://localhost:8001/sse';
 const TERRAFORM_URL = 'http://localhost:8002/sse';
 
-// type MCPClient = Awaited<ReturnType<typeof createMCPClient>>;
-// export type McpTools = Awaited<ReturnType<MCPClient['tools']>>;
+async function initMcpTools() {
+  const tools = {
+    core: {},
+    diagram: {},
+    terraform: {},
+  };
 
-// async function initClient(url: string): Promise<MCPClient> {
-//   return createMCPClient({
-//     transport: {
-//       type: 'sse',
-//       url: url,
-//     },
-//   });
-// }
+  // Helper function to safely initialize MCP client
+  const initClient = async (name: string, url: string) => {
+    try {
+      console.log(`Initializing MCP ${name} client at ${url}...`);
+      const client = await createMCPClient({
+        transport: {
+          type: 'sse',
+          url: url,
+        },
+      });
+      const tools = await client.tools();
+      console.log(
+        `MCP ${name} tools loaded:`,
+        Object.keys(tools || {}).length,
+        'tools',
+      );
 
-// // Export empty toolsets immediately; populate asynchronously to avoid failing route imports
-// export const mcpTools: {
-//   core: McpTools;
-//   diagram: McpTools;
-//   terraform: McpTools;
-// } = {
-//   core: {},
-//   diagram: {},
-//   terraform: {},
-// };
+      // Validate tools object structure
+      if (!tools || typeof tools !== 'object') {
+        console.warn(
+          `MCP ${name} returned invalid tools object:`,
+          typeof tools,
+        );
+        return {};
+      }
 
-// // Best-effort async initialization; failures are logged and do not crash the route
-// void (async () => {
-//   const initOne = async (label: keyof typeof mcpTools, url: string) => {
-//     try {
-//       const client = await initClient(url);
-//       mcpTools[label] = await client.tools();
-//     } catch (err: any) {
-//       console.warn(`MCP ${label} tools unavailable:`, err?.message ?? err);
-//     }
-//   };
+      // Filter out any malformed tools
+      const validTools: Record<string, any> = {};
+      for (const [toolName, tool] of Object.entries(tools)) {
+        if (
+          tool &&
+          typeof tool === 'object' &&
+          typeof tool.execute === 'function'
+        ) {
+          validTools[toolName] = tool;
+        } else {
+          console.warn(
+            `MCP ${name} tool '${toolName}' is malformed:`,
+            typeof tool,
+          );
+        }
+      }
 
-//   await Promise.all([
-//     initOne('core', CORE_URL),
-//     initOne('diagram', DIAGRAM_URL),
-//     initOne('terraform', TERRAFORM_URL),
-//   ]);
-// })();
+      console.log(
+        `MCP ${name} valid tools:`,
+        Object.keys(validTools).length,
+        'of',
+        Object.keys(tools).length,
+      );
+      return validTools;
+    } catch (err: any) {
+      console.warn(
+        `MCP ${name} server unavailable at ${url}:`,
+        err?.message ?? err,
+      );
+      return {}; // Return empty tools object as fallback
+    }
+  };
 
-const coreMcpClient = await createMCPClient({
-  transport: {
-    type: 'sse',
-    url: CORE_URL,
-  },
-});
+  // Initialize all MCP tools with error handling
+  const [coreTools, diagramTools, terraformTools] = await Promise.all([
+    initClient('core', CORE_URL),
+    initClient('diagram', DIAGRAM_URL),
+    initClient('terraform', TERRAFORM_URL),
+  ]);
 
-const diagramMcpClient = await createMCPClient({
-  transport: {
-    type: 'sse',
-    url: DIAGRAM_URL,
-  },
-});
+  tools.core = coreTools;
+  tools.diagram = diagramTools;
+  tools.terraform = terraformTools;
 
-const terraformMcpClient = await createMCPClient({
-  transport: {
-    type: 'sse',
-    url: TERRAFORM_URL,
-  },
-});
-export const mcpTools = {
-  core: await coreMcpClient.tools(),
-  diagram: await diagramMcpClient.tools(),
-  terraform: await terraformMcpClient.tools(),
-};
+  return tools;
+}
+
+export const mcpTools = await initMcpTools();

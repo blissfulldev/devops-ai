@@ -20,28 +20,48 @@ export const runCoreAgent: AgentRunner = ({
   telemetryId = 'agent-core',
   chatId,
 }) => {
-  const child = streamText({
-    model: myProvider.languageModel(selectedChatModel),
-    system: coreSystemPrompt,
-    messages: [
-      ...convertToModelMessages(sanitizeUIMessages(uiMessages)),
-      { role: 'user', content: input },
-    ],
-    stopWhen: stepCountIs(2),
-    tools: {
-      ...mcpTools.core,
-      requestClarification: requestClarification({
-        dataStream,
-        agentName: 'core_agent',
-        chatId: chatId as string,
-      }),
-    },
-    experimental_transform: smoothStream({ chunking: 'word' }),
-    experimental_telemetry: {
-      isEnabled: isProductionEnvironment,
-      functionId: telemetryId,
-    },
-  });
+  try {
+    const child = streamText({
+      model: myProvider.languageModel(selectedChatModel),
+      system: coreSystemPrompt,
+      messages: [
+        ...convertToModelMessages(sanitizeUIMessages(uiMessages)),
+        { role: 'user', content: input },
+      ],
+      stopWhen: stepCountIs(5), // Allow enough steps: analyze + clarify + use tools + generate prompt + finalize
+      tools: {
+        ...mcpTools.core,
+        requestClarification: requestClarification({
+          dataStream,
+          agentName: 'core_agent',
+          chatId: chatId as string,
+        }),
+      },
+      experimental_transform: smoothStream({ chunking: 'word' }),
+      experimental_telemetry: {
+        isEnabled: isProductionEnvironment,
+        functionId: telemetryId,
+      },
+    });
 
-  return child;
+    return child;
+  } catch (err) {
+    console.error('Error creating core agent stream:', err);
+    return streamText({
+      model: myProvider.languageModel(selectedChatModel),
+      system:
+        'You are having technical difficulties. Explain that core agent is temporarily unavailable.',
+      messages: [
+        {
+          role: 'user',
+          content:
+            'Core agent is temporarily unavailable. Please try again later.',
+        },
+      ],
+      experimental_telemetry: {
+        isEnabled: isProductionEnvironment,
+        functionId: `${telemetryId}-fallback`,
+      },
+    });
+  }
 };

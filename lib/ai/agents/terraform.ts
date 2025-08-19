@@ -21,29 +21,59 @@ export const runTerraformAgent: AgentRunner = ({
   telemetryId = 'agent-terraform',
   chatId,
 }) => {
-  const child = streamText({
-    model: myProvider.languageModel(selectedChatModel),
-    system: terraformSystemPrompt,
-    messages: [
-      ...convertToModelMessages(sanitizeUIMessages(uiMessages)),
-      { role: 'user', content: input },
-    ],
-    tools: {
-      ...mcpTools.terraform,
-      writeTerraformToDisk: writeTerraformToDisk(),
-      requestClarification: requestClarification({
-        dataStream,
-        agentName: 'terraform_agent',
-        chatId: chatId as string,
-      }),
-    },
-    stopWhen: stepCountIs(5),
-    experimental_transform: smoothStream({ chunking: 'word' }),
-    experimental_telemetry: {
-      isEnabled: isProductionEnvironment,
-      functionId: telemetryId,
-    },
-  });
+  // Check if terraform tools are available
+  const terraformTools = (mcpTools as any).terraform || {};
+  const hasTools = Object.keys(terraformTools).length > 0;
 
-  return child;
+  if (!hasTools) {
+    console.warn('Terraform MCP tools not available, using fallback mode');
+  }
+
+  try {
+    const child = streamText({
+      model: myProvider.languageModel(selectedChatModel),
+      system: hasTools
+        ? terraformSystemPrompt
+        : `${terraformSystemPrompt}\n\nNOTE: Some Terraform tools are currently unavailable. Focus on generating Terraform code using your knowledge.`,
+      messages: [
+        ...convertToModelMessages(sanitizeUIMessages(uiMessages)),
+        { role: 'user', content: input },
+      ],
+      tools: {
+        ...(terraformTools as Record<string, any>),
+        writeTerraformToDisk: writeTerraformToDisk(),
+        requestClarification: requestClarification({
+          dataStream,
+          agentName: 'terraform_agent',
+          chatId: chatId as string,
+        }),
+      },
+      stopWhen: stepCountIs(6), // Allow enough steps: analyze + generate + write + validate + retry + finalize
+      experimental_transform: smoothStream({ chunking: 'word' }),
+      experimental_telemetry: {
+        isEnabled: isProductionEnvironment,
+        functionId: telemetryId,
+      },
+    });
+
+    return child;
+  } catch (err) {
+    console.error('Error creating terraform agent stream:', err);
+    return streamText({
+      model: myProvider.languageModel(selectedChatModel),
+      system:
+        'You are having technical difficulties. Explain that terraform generation is temporarily unavailable.',
+      messages: [
+        {
+          role: 'user',
+          content:
+            'Terraform generation is currently experiencing technical difficulties. Please try again later.',
+        },
+      ],
+      experimental_telemetry: {
+        isEnabled: isProductionEnvironment,
+        functionId: `${telemetryId}-fallback`,
+      },
+    });
+  }
 };

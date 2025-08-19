@@ -271,46 +271,54 @@ export function Chat({
           session={session}
         />
 
-        <div className="flex-1 overflow-hidden">
-          <Messages
-            chatId={id}
-            status={status}
-            votes={votes}
-            messages={messages}
-            setMessages={setMessages}
-            regenerate={regenerate}
-            isReadonly={isReadonly}
-            isArtifactVisible={isArtifactVisible}
-          />
-        </div>
+        <div className="flex-1 min-h-0 overflow-hidden">
+          <div className="h-full flex flex-col">
+            <div className="flex-1 min-h-0 overflow-y-auto">
+              <Messages
+                chatId={id}
+                status={status}
+                votes={votes}
+                messages={messages}
+                setMessages={setMessages}
+                regenerate={regenerate}
+                isReadonly={isReadonly}
+                isArtifactVisible={isArtifactVisible}
+              />
 
-        {!isReadonly && (
-          <div className="px-4">
-            <ClarificationManager
-              chatId={id}
-              onClarificationResponse={handleClarificationResponse}
-              onBatchClarificationResponse={handleBatchClarificationResponse}
-            />
+              {!isReadonly && (
+                <div className="px-4 pb-4">
+                  <ClarificationManager
+                    chatId={id}
+                    onClarificationResponse={handleClarificationResponse}
+                    onBatchClarificationResponse={
+                      handleBatchClarificationResponse
+                    }
+                  />
+                </div>
+              )}
+            </div>
+
+            <div className="flex-shrink-0 border-t bg-background">
+              <form className="flex mx-auto px-4 py-4 gap-2 w-full md:max-w-3xl">
+                {!isReadonly && (
+                  <MultimodalInput
+                    chatId={id}
+                    input={input}
+                    setInput={setInput}
+                    status={status}
+                    stop={stop}
+                    attachments={attachments}
+                    setAttachments={setAttachments}
+                    messages={messages}
+                    setMessages={setMessages}
+                    sendMessage={sendMessage}
+                    selectedVisibilityType={visibilityType}
+                  />
+                )}
+              </form>
+            </div>
           </div>
-        )}
-
-        <form className="flex mx-auto px-4 bg-background pb-4 md:pb-6 gap-2 w-full md:max-w-3xl">
-          {!isReadonly && (
-            <MultimodalInput
-              chatId={id}
-              input={input}
-              setInput={setInput}
-              status={status}
-              stop={stop}
-              attachments={attachments}
-              setAttachments={setAttachments}
-              messages={messages}
-              setMessages={setMessages}
-              sendMessage={sendMessage}
-              selectedVisibilityType={visibilityType}
-            />
-          )}
-        </form>
+        </div>
       </div>
 
       <Artifact

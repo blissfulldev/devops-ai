@@ -167,32 +167,61 @@ export async function POST(request: Request) {
 
     const stream = createUIMessageStream({
       execute: ({ writer: dataStream }) => {
-        const result = runSupervisorAgent({
-          selectedChatModel,
-          uiMessages,
-          session: session as Session,
-          dataStream,
-          telemetryId: 'supervisor-stream-text',
-          chatId: id,
-        });
+        try {
+          const result = runSupervisorAgent({
+            selectedChatModel,
+            uiMessages,
+            session: session as Session,
+            dataStream,
+            telemetryId: 'supervisor-stream-text',
+            chatId: id,
+          });
 
-        result.consumeStream();
-        dataStream.merge(result.toUIMessageStream({ sendReasoning: true }));
+          result.consumeStream();
+          dataStream.merge(result.toUIMessageStream({ sendReasoning: true }));
+        } catch (error: any) {
+          console.error('Error in supervisor agent execution:', error);
+
+          // Handle specific Gemini API errors
+          let errorMessage =
+            'An error occurred while processing your request. Please try again.';
+          if (
+            error?.message?.includes('function_call.args') ||
+            error?.message?.includes('Invalid value')
+          ) {
+            errorMessage =
+              'The content is too large for processing. Please try with a shorter request or break it into smaller parts.';
+          } else if (error?.message?.includes('INVALID_ARGUMENT')) {
+            errorMessage =
+              'Invalid request format. Please rephrase your request and try again.';
+          }
+
+          dataStream.write({
+            type: 'text-delta',
+            delta: errorMessage,
+            id: 'error-message',
+          });
+        }
       },
       generateId: generateUUID,
       onFinish: async ({ messages }) => {
-        await saveMessages({
-          messages: messages.map((message) => ({
-            id: message.id,
-            role: message.role,
-            parts: message.parts,
-            createdAt: new Date(),
-            attachments: [],
-            chatId: id,
-          })),
-        });
+        try {
+          await saveMessages({
+            messages: messages.map((message) => ({
+              id: message.id,
+              role: message.role,
+              parts: message.parts,
+              createdAt: new Date(),
+              attachments: [],
+              chatId: id,
+            })),
+          });
+        } catch (error) {
+          console.error('Error saving messages:', error);
+        }
       },
-      onError: () => {
+      onError: (error) => {
+        console.error('Stream error:', error);
         return 'Oops, an error occurred!';
       },
     });
