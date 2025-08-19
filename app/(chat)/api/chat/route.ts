@@ -166,7 +166,7 @@ export async function POST(request: Request) {
     await createStreamId({ streamId, chatId: id });
 
     const stream = createUIMessageStream({
-      execute: ({ writer: dataStream }) => {
+      execute: async ({ writer: dataStream }) => {
         try {
           const result = runSupervisorAgent({
             selectedChatModel,
@@ -177,8 +177,8 @@ export async function POST(request: Request) {
             chatId: id,
           });
 
-          result.consumeStream();
-          dataStream.merge(result.toUIMessageStream({ sendReasoning: true }));
+          const supervisorStream = result.toUIMessageStream();
+          await supervisorStream.consumeStream();
         } catch (error: any) {
           console.error('Error in supervisor agent execution:', error);
 

@@ -118,318 +118,130 @@ export function runSupervisorAgent({
     }
   }
 
-  // Run orchestration asynchronously so runSupervisorAgent can return a short acknowledgment stream
-  (async () => {
-    console.log(
-      'Supervisor starting deterministic orchestration for chat:',
-      chatId,
-    );
-
-    // Validate dataStream shape early (best-effort)
-    if (!dataStream || typeof (dataStream as any).merge !== 'function') {
-      console.warn(
-        'Supervisor: dataStream.merge not available - UI merging may fail.',
-      );
-    }
-
-    // If already waiting for clarification at start, notify and stop
-    if (ConversationStateManager.isWaitingForClarification(chatId)) {
-      const pending = ConversationStateManager.getPendingClarifications(chatId);
-      console.log(
-        'Supervisor paused at start - waiting for clarifications:',
-        pending.length,
-      );
-      pushUiNotice(
-        `Workflow is paused. Waiting for user to answer ${pending.length} clarification(s).`,
-      );
-      return;
-    }
-
-    // Iterate agents sequentially
-    for (const agentName of AGENT_ORDER) {
-      try {
-        const state = (ConversationStateManager as any).getState(chatId) as any;
-        const agentStatus = state.agentStates?.[agentName];
-
-        // Skip if already completed
-        if (agentStatus === AgentStatus.COMPLETED) {
-          console.log(`Supervisor: skipping ${agentName} (already completed)`);
-          continue;
-        }
-
-        console.log(
-          `Supervisor: preparing to run agent ${agentName}. Current status: ${agentStatus}`,
-        );
-
-        // Mark current agent as running (this sets state.agentStates[agentName] = RUNNING)
-        ConversationStateManager.setCurrentAgent(chatId, agentName);
-
-        // Build augmented UI messages including safe normalization of clarification responses
-        const rawClarResponses =
-          ConversationStateManager.getAllClarificationResponses(chatId) || [];
-        // Defensive filter to remove malformed entries
-        const clarificationResponses = rawClarResponses.filter(
-          Boolean,
-        ) as any[];
-
-        const augmentedUIMessages: ChatMessage[] = [
-          ...uiMessages,
-          ...(clarificationResponses
-            .filter(Boolean)
-            .map((r) => {
-              if (!r || typeof r !== 'object') {
-                console.warn(
-                  'Supervisor: encountered malformed clarification response for chat',
+  // Run orchestration synchronously and stream all agent outputs to the UI
+  return {
+    toUIMessageStream: () => {
+      // Create a composite stream that merges all agent outputs
+      const compositeStream = {
+        merge: (childStream: any) => {
+          if (typeof dataStream.merge === 'function') {
+            dataStream.merge(childStream);
+          }
+        },
+        consumeStream: async () => {
+          // Supervisor orchestration logic
+          if (ConversationStateManager.isWaitingForClarification(chatId)) {
+            const pending =
+              ConversationStateManager.getPendingClarifications(chatId);
+            pushUiNotice(
+              `Workflow is paused. Waiting for user to answer ${pending.length} clarification(s).`,
+            );
+            return;
+          }
+          for (const agentName of AGENT_ORDER) {
+            try {
+              const state = (ConversationStateManager as any).getState(
+                chatId,
+              ) as any;
+              const agentStatus = state.agentStates?.[agentName];
+              if (agentStatus === AgentStatus.COMPLETED) continue;
+              ConversationStateManager.setCurrentAgent(chatId, agentName);
+              const rawClarResponses =
+                ConversationStateManager.getAllClarificationResponses(chatId) ||
+                [];
+              const clarificationResponses = rawClarResponses.filter(
+                Boolean,
+              ) as any[];
+              const augmentedUIMessages: ChatMessage[] = [
+                ...uiMessages,
+                ...(clarificationResponses
+                  .filter(Boolean)
+                  .map((r) => {
+                    if (!r || typeof r !== 'object') return null;
+                    const answerText = getClarificationAnswer(r);
+                    return {
+                      id: r.id ?? `clar-${Math.random().toString(36).slice(2)}`,
+                      role: 'user' as const,
+                      parts: [
+                        {
+                          type: 'text',
+                          text: `Clarification response: ${answerText}`,
+                        } as UIMessagePart<CustomUIDataTypes, ChatTools>,
+                      ],
+                      metadata: {
+                        createdAt:
+                          (r.timestamp as string) ?? new Date().toISOString(),
+                      },
+                    } as ChatMessage;
+                  })
+                  .filter(Boolean) as ChatMessage[]),
+              ];
+              let child: ReturnType<AgentRunner>;
+              try {
+                const runnerFn = agents[agentName];
+                child = runnerFn({
+                  selectedChatModel,
+                  uiMessages: augmentedUIMessages,
+                  input: '',
+                  dataStream,
+                  telemetryId: `agent-${agentName}`,
                   chatId,
-                  r,
+                });
+              } catch (err) {
+                pushUiNotice(
+                  `Agent ${agentName} failed to start: ${stringifyError(err)}`,
                 );
-                return null;
+                continue;
               }
-              const answerText = getClarificationAnswer(r);
-              return {
-                id: r.id ?? `clar-${Math.random().toString(36).slice(2)}`,
-                role: 'user' as const,
-                parts: [
-                  {
-                    type: 'text',
-                    text: `Clarification response: ${answerText}`,
-                  } as UIMessagePart<CustomUIDataTypes, ChatTools>,
-                ],
-                metadata: {
-                  createdAt:
-                    (r.timestamp as string) ?? new Date().toISOString(),
-                },
-              } as ChatMessage;
-            })
-            .filter(Boolean) as ChatMessage[]),
-        ];
-
-        // Record pending-before to detect whether the child creates clarifications itself
-        const pendingBefore =
-          ConversationStateManager.getPendingClarifications(chatId).length;
-
-        // Runner creation: defensive checks and one retry
-        let child: ReturnType<AgentRunner>;
-        try {
-          const runnerFn = agents[agentName];
-          if (typeof runnerFn !== 'function') {
-            console.error(
-              `Supervisor: runner for ${agentName} is not a function`,
-              runnerFn,
-            );
-            pushUiNotice(
-              `Internal error: agent "${agentName}" is not available. Check server logs.`,
-            );
-            // mark failed and stop
-            try {
-              const s = (ConversationStateManager as any).getState(
-                chatId,
-              ) as any;
-              if (s.agentStates && agentName in s.agentStates) {
-                s.agentStates[agentName] = AgentStatus.FAILED;
+              try {
+                dataStream.merge(
+                  child.toUIMessageStream({ sendReasoning: true }),
+                );
+                await child.consumeStream();
+              } catch (err) {
+                pushUiNotice(
+                  `Agent ${agentName} encountered an error during execution.`,
+                );
+                continue;
               }
-            } catch (mErr) {
-              console.error(
-                'Supervisor: error marking agent failed:',
-                stringifyError(mErr),
+              await sleep(80);
+              const pendingAfter =
+                ConversationStateManager.getPendingClarifications(
+                  chatId,
+                ).length;
+              const waiting =
+                ConversationStateManager.isWaitingForClarification(chatId);
+              if (waiting && pendingAfter > 0) {
+                pushUiNotice(
+                  `Agent ${agentName} has asked for ${pendingAfter} clarification(s). Workflow is paused until the user answers.`,
+                );
+                return;
+              }
+              const progress =
+                ConversationStateManager.getWorkflowProgress(chatId);
+              if (!progress.completedAgents.includes(agentName)) {
+                ConversationStateManager.markAgentCompleted(chatId, agentName);
+              }
+              ConversationStateManager.clearCurrentAgent(chatId);
+            } catch (err) {
+              pushUiNotice(
+                `Agent ${agentName} failed unexpectedly: ${stringifyError(err)}`,
               );
+              continue;
             }
-            return;
           }
-
-          // Call runner (capture synchronous throws)
-          try {
-            child = runnerFn({
-              selectedChatModel,
-              uiMessages: augmentedUIMessages,
-              input: '',
-              dataStream,
-              telemetryId: `agent-${agentName}`,
-              chatId,
-            });
-          } catch (callErr) {
-            console.error(
-              `Supervisor: runner function threw synchronously for ${agentName}:`,
-              stringifyError(callErr),
-            );
-            pushUiNotice(
-              `Agent ${agentName} failed to start: ${stringifyError(callErr)}`,
-            );
-            // mark failed and stop
-            try {
-              const s = (ConversationStateManager as any).getState(
-                chatId,
-              ) as any;
-              if (s.agentStates && agentName in s.agentStates) {
-                s.agentStates[agentName] = AgentStatus.FAILED;
-              }
-            } catch (mErr) {
-              console.error(
-                'Supervisor: error marking agent failed after sync throw:',
-                stringifyError(mErr),
-              );
-            }
-            return;
-          }
-        } catch (err) {
-          console.error(
-            `Supervisor: unexpected error preparing runner for ${agentName}:`,
-            stringifyError(err),
-          );
-          pushUiNotice(
-            `Internal error preparing agent ${agentName}. Check server logs.`,
-          );
           try {
             const s = (ConversationStateManager as any).getState(chatId) as any;
-            if (s.agentStates && agentName in s.agentStates) {
-              s.agentStates[agentName] = AgentStatus.FAILED;
-            }
-          } catch (mErr) {
-            console.error(
-              'Supervisor: error marking agent failed after unexpected error:',
-              stringifyError(mErr),
-            );
-          }
-          return;
-        }
-
-        // Merge child's UI stream into supervisor's data stream
-        try {
-          dataStream.merge(child.toUIMessageStream({ sendReasoning: true }));
-        } catch (err) {
-          console.error(
-            `Supervisor: error merging ${agentName} child stream:`,
-            stringifyError(err),
-          );
-        }
-
-        // Await child completion so notifier won't interleave with child tokens
-        try {
-          await child.consumeStream();
-        } catch (err) {
-          console.error(
-            `Supervisor: child ${agentName} consumeStream threw:`,
-            stringifyError(err),
-          );
-          // Clear current agent and mark failed
-          ConversationStateManager.clearCurrentAgent(chatId);
-          try {
-            const s = (ConversationStateManager as any).getState(chatId) as any;
-            if (s.agentStates && agentName in s.agentStates) {
-              s.agentStates[agentName] = AgentStatus.FAILED;
-            }
-          } catch (mErr) {
-            console.error(
-              'Supervisor: error marking agent failed after stream error:',
-              stringifyError(mErr),
-            );
-          }
+            s.workflowPhase =
+              (ConversationStateManager as any).WorkflowPhase?.COMPLETED ??
+              'completed';
+          } catch (err) {}
           pushUiNotice(
-            `Agent ${agentName} encountered an error during execution.`,
+            'Workflow completed: core_agent, diagram_agent, terraform_agent have run successfully.',
           );
-          return;
-        }
-
-        // Small pause to allow streaming infra to flush
-        await sleep(80);
-
-        // After child finishes: check clarifications (use pendingBefore to avoid double notifications)
-        const pendingAfter =
-          ConversationStateManager.getPendingClarifications(chatId).length;
-        const waiting =
-          ConversationStateManager.isWaitingForClarification(chatId);
-
-        if (waiting && pendingAfter > 0) {
-          if (pendingAfter > pendingBefore) {
-            console.log(
-              `Supervisor: child ${agentName} created ${pendingAfter - pendingBefore} clarification(s). Skipping supervisor notice.`,
-            );
-            // Keep agent in WAITING_FOR_CLARIFICATION state (already set by requestClarification tool)
-            return;
-          }
-
-          console.log(
-            `Supervisor: agent ${agentName} requested clarifications. Pausing orchestration.`,
-          );
-          pushUiNotice(
-            `Agent ${agentName} has asked for ${pendingAfter} clarification(s). Workflow is paused until the user answers.`,
-          );
-          return;
-        }
-
-        // If agent didn't explicitly mark itself completed, mark it completed now
-        const progress = ConversationStateManager.getWorkflowProgress(chatId);
-        if (!progress.completedAgents.includes(agentName)) {
-          console.log(`Supervisor: auto-marking ${agentName} as completed.`);
-          ConversationStateManager.markAgentCompleted(chatId, agentName);
-        }
-
-        // Clear currentAgent to allow next agent to start
-        ConversationStateManager.clearCurrentAgent(chatId);
-      } catch (err) {
-        console.error(
-          `Supervisor: unexpected error while running ${agentName}:`,
-          stringifyError(err),
-        );
-        try {
-          const s = (ConversationStateManager as any).getState(chatId) as any;
-          if (s.agentStates && agentName in s.agentStates) {
-            s.agentStates[agentName] = AgentStatus.FAILED;
-          }
-        } catch (mErr) {
-          console.error(
-            'Supervisor: error marking agent failed after unexpected error:',
-            stringifyError(mErr),
-          );
-        }
-        pushUiNotice(
-          `Agent ${agentName} failed unexpectedly: ${stringifyError(err)}`,
-        );
-        return;
-      }
-    }
-
-    // All agents run (or were marked completed); mark workflow complete
-    console.log(
-      'Supervisor: all agents completed (or marked completed). Marking workflow complete.',
-    );
-    try {
-      const s = (ConversationStateManager as any).getState(chatId) as any;
-      s.workflowPhase =
-        (ConversationStateManager as any).WorkflowPhase?.COMPLETED ??
-        'completed';
-    } catch (err) {
-      console.error(
-        'Supervisor: error setting workflow phase to COMPLETED:',
-        stringifyError(err),
-      );
-    }
-    pushUiNotice(
-      'Workflow completed: core_agent, diagram_agent, terraform_agent have run successfully.',
-    );
-  })().catch((err) => {
-    console.error(
-      'Supervisor orchestration top-level error:',
-      stringifyError(err),
-    );
-  });
-
-  // Return a short acknowledgment stream
-  return streamText({
-    model: myProvider.languageModel(selectedChatModel),
-    system: supervisorSystemPrompt,
-    messages: [
-      {
-        role: 'user',
-        content:
-          'Supervisor has started deterministic orchestration. Streaming outputs from agents will appear shortly.',
-      },
-    ],
-    stopWhen: stepCountIs(1),
-    experimental_transform: smoothStream({ chunking: 'word' }),
-    experimental_telemetry: {
-      isEnabled: isProductionEnvironment,
-      functionId: telemetryId,
+        },
+      };
+      return compositeStream;
     },
-  });
+  };
 }
