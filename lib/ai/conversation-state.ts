@@ -25,6 +25,7 @@ export interface ConversationState {
   chatId: string;
   workflowPhase: WorkflowPhase;
   currentAgent?: string;
+  pausedAgent?: string; // resume pointer: which agent asked for clarification
   agentStates: AgentWorkflowState;
   isWaitingForClarification: boolean;
   pendingClarifications: Map<string, ClarificationRequest>;
@@ -33,10 +34,10 @@ export interface ConversationState {
   workflowStep?: string;
 }
 
-// In-memory store for conversation states (in production, use Redis or database)
+// In-memory store for conversation states (production: swap for Redis/DB)
 const conversationStates = new Map<string, ConversationState>();
 
-function getState(chatId: string): ConversationState {
+export function getState(chatId: string): ConversationState {
   if (!conversationStates.has(chatId)) {
     conversationStates.set(chatId, {
       chatId,
@@ -59,30 +60,67 @@ function getState(chatId: string): ConversationState {
   return state;
 }
 
+/**
+ * Atomically update conversation state.
+ * Use this helper to make multiple changes to the state object.
+ */
+export function updateState(
+  chatId: string,
+  updater: (state: ConversationState) => void,
+): void {
+  const state = getState(chatId);
+  updater(state);
+  conversationStates.set(chatId, state);
+}
+
+/**
+ * Request clarification from the user.
+ * This will:
+ *  - mark the agent (the currentAgent) as WAITING_FOR_CLARIFICATION,
+ *  - set pausedAgent (if not already set),
+ *  - clear the currentAgent so supervisor won't think the agent is still running.
+ */
 export function addClarificationRequest(
   chatId: string,
   request: ClarificationRequest,
 ): void {
   const state = getState(chatId);
 
-  // Mark current agent as waiting for clarification
-  const agentName = state.currentAgent as keyof AgentWorkflowState;
-  if (agentName in state.agentStates) {
-    state.agentStates[agentName] = AgentStatus.WAITING_FOR_CLARIFICATION;
+  // The agent that requested clarification is the currentAgent at the moment of request
+  const agentName = state.currentAgent;
+
+  if (
+    agentName &&
+    (agentName as keyof AgentWorkflowState) in state.agentStates
+  ) {
+    // Mark agent as waiting for clarification
+    state.agentStates[agentName as keyof AgentWorkflowState] =
+      AgentStatus.WAITING_FOR_CLARIFICATION;
+
+    // Record pausedAgent (first requester wins)
+    if (!state.pausedAgent) {
+      state.pausedAgent = agentName;
+    }
+
+    // Clear currentAgent to indicate the agent is paused (not running)
+    state.currentAgent = undefined;
+    state.workflowStep = undefined;
   }
 
   if (!state.isWaitingForClarification) {
-    // If not waiting, make this the active clarification
     state.pendingClarifications.set(request.id, request);
     state.isWaitingForClarification = true;
   } else {
-    // If already waiting, add to queue for later
     state.clarificationQueue.push(request);
   }
 
   conversationStates.set(chatId, state);
 }
 
+/**
+ * Add clarification response: store it, remove from pending, process queue.
+ * IMPORTANT: Do NOT reset all agent progress here. Keep pausedAgent so supervisor can resume correctly.
+ */
 export function addClarificationResponse(
   chatId: string,
   response: ClarificationResponse,
@@ -91,40 +129,35 @@ export function addClarificationResponse(
 
   state.clarificationHistory.set(response.requestId, response);
   state.pendingClarifications.delete(response.requestId);
+
   console.log(
     'Pending Clarifications:',
     Array.from(state.pendingClarifications.values()),
   );
   console.log(
-    `Adding clarification response for request ${response.requestId} in chat with response ${response.answer}`,
+    `Adding clarification response for request ${response.requestId} in chat with response ${response.answer ?? response.text}`,
   );
+
   if (state.pendingClarifications.size === 0) {
-    // If no more pending clarifications, check queue
-    // Process next clarification from queue
+    // Move queued clarifications into pending, or finish waiting
     const nextRequest = state.clarificationQueue.shift();
     if (nextRequest) {
       state.pendingClarifications.set(nextRequest.id, nextRequest);
       state.isWaitingForClarification = true;
     } else {
-      // No more clarifications, resume workflow
+      // No more clarifications -> stop waiting, preserve agent progress
       console.log(
-        `All clarifications completed for chat ${chatId}, resetting workflow state`,
+        `All clarifications completed for chat ${chatId}. Clearing waiting state (preserve agent progress).`,
       );
       state.isWaitingForClarification = false;
 
-      // Reset ALL agent statuses to NOT_STARTED to ensure clean workflow restart
-      state.agentStates.core_agent = AgentStatus.NOT_STARTED;
-      state.agentStates.diagram_agent = AgentStatus.NOT_STARTED;
-      state.agentStates.terraform_agent = AgentStatus.NOT_STARTED;
-      state.workflowPhase = WorkflowPhase.PLANNING;
-
-      console.log(`Reset all agent states to NOT_STARTED for chat ${chatId}`);
-
-      // Clear current agent to allow fresh start
+      // Keep pausedAgent as the resume pointer. Supervisor will clear it after resuming.
+      // Also ensure currentAgent is cleared (agent is paused and will be resumed by supervisor).
       state.currentAgent = undefined;
       state.workflowStep = undefined;
     }
   }
+
   conversationStates.set(chatId, state);
 }
 
@@ -144,13 +177,31 @@ export function getClarificationResponse(
 }
 
 /**
- * Return all stored clarification responses (array form).
+ * Return all stored clarification responses as an array (filtered).
  */
 export function getAllClarificationResponses(
   chatId: string,
 ): ClarificationResponse[] {
   const state = getState(chatId);
-  return Array.from(state.clarificationHistory.values());
+  return Array.from(state.clarificationHistory.values()).filter(
+    Boolean,
+  ) as ClarificationResponse[];
+}
+
+export function setPausedAgent(chatId: string, agentName?: string): void {
+  const state = getState(chatId);
+  state.pausedAgent = agentName ?? undefined;
+  conversationStates.set(chatId, state);
+}
+
+export function getPausedAgent(chatId: string): string | undefined {
+  return getState(chatId).pausedAgent;
+}
+
+export function clearPausedAgent(chatId: string): void {
+  const state = getState(chatId);
+  state.pausedAgent = undefined;
+  conversationStates.set(chatId, state);
 }
 
 export function setCurrentAgent(
@@ -162,8 +213,7 @@ export function setCurrentAgent(
   state.currentAgent = agentName;
   state.workflowStep = step;
 
-  // Mark the current agent as running
-  if (agentName in state.agentStates) {
+  if ((agentName as keyof AgentWorkflowState) in state.agentStates) {
     state.agentStates[agentName as keyof AgentWorkflowState] =
       AgentStatus.RUNNING;
   }
@@ -171,9 +221,7 @@ export function setCurrentAgent(
   conversationStates.set(chatId, state);
 }
 
-/**
- * Clear the current agent (e.g. on error) and set its status back to NOT_STARTED if it was RUNNING.
- */
+
 export function clearCurrentAgent(chatId: string): void {
   const state = getState(chatId);
   const current = state.currentAgent;
@@ -195,7 +243,6 @@ export function clearState(chatId: string): void {
   conversationStates.delete(chatId);
 }
 
-// Workflow management functions
 export function getCurrentAgent(chatId: string): string | undefined {
   return getState(chatId).currentAgent;
 }
@@ -219,9 +266,9 @@ export function getNextAgent(chatId: string): string | null {
     terraform_agent,
     currentAgent: state.currentAgent,
     isWaiting: state.isWaitingForClarification,
+    pausedAgent: state.pausedAgent,
   });
 
-  // Workflow progression rules
   if (
     core_agent === AgentStatus.NOT_STARTED ||
     core_agent === AgentStatus.WAITING_FOR_CLARIFICATION
@@ -243,7 +290,6 @@ export function getNextAgent(chatId: string): string | null {
     return null; // Workflow complete
   }
 
-  // If current agent is still running, return it
   const currentAgent = state.currentAgent;
   if (
     currentAgent &&
@@ -258,7 +304,7 @@ export function getNextAgent(chatId: string): string | null {
 
 export function markAgentCompleted(chatId: string, agentName: string): void {
   const state = getState(chatId);
-  if (agentName in state.agentStates) {
+  if ((agentName as keyof AgentWorkflowState) in state.agentStates) {
     state.agentStates[agentName as keyof AgentWorkflowState] =
       AgentStatus.COMPLETED;
     updateWorkflowPhase(state);
@@ -302,15 +348,18 @@ function updateWorkflowPhase(state: ConversationState): void {
   }
 }
 
-// Export as ConversationStateManager for backward compatibility
 export const ConversationStateManager = {
   getState,
+  updateState,
   addClarificationRequest,
   addClarificationResponse,
   isWaitingForClarification,
   getPendingClarifications,
   getClarificationResponse,
   getAllClarificationResponses,
+  setPausedAgent,
+  getPausedAgent,
+  clearPausedAgent,
   setCurrentAgent,
   clearCurrentAgent,
   clearState,

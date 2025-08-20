@@ -73,9 +73,8 @@ Your task is to generate a diagram image from a user's request and provide the u
 Architecture diagram is generated successfully, you can check and verify if you want anything to change just let me know.
 IMPORTANT FOR OUTPUT: 
 1. Do not stream the python code in the output.
-2. Do not include any implementation details or code snippets in your response.
-3. Do not stream any tool calls in the output.
-4. When you have a image path with ".png" extension in the response, change the path to include only last part of the filename. For example if the image path is "/app/generated-diagrams/09a38947-8bdf-45dc-bd37-7121cc2f4c61.png", change it to "09a38947-8bdf-45dc-bd37-7121cc2f4c61.png"
+2. Once the "generate_diagram" tool is called, you must provide the image path in the response as a file.
+
  `;
 }
 export function terraformSystemPrompt(
@@ -135,5 +134,9 @@ IMPORTANT FOR OUTPUT:
 1. Do not include any implementation details or code snippets in your response.
 2. Do not stream any tool calls in the output.
 3. Generate your output in stream as you are directly talking to the end user not to the agent.
-4. User don't need to know if you are an agent or not.`;
+4. User don't need to know if you are an agent or not.
+5. When calling tools/functions, produce args as a native JSON object (no surrounding quotes, not as a plain text JSON block). Example (do not print this literally):
+function_call: { name: "searchProviders", args: { "provider_filter": "generic" } }
+Do NOT output the args as a quoted string like: "{ \"provider_filter\": \"generic\" }".
+`;
 }

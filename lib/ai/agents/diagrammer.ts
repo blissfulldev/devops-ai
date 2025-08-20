@@ -15,6 +15,37 @@ import { sanitizeUIMessages } from '@/lib/utils';
 import type { ChatMessage } from '@/lib/types';
 import type { Session } from 'next-auth';
 
+// Wrap tools to normalize string args
+function wrapTools(originalTools: Record<string, any>) {
+  return Object.fromEntries(
+    Object.entries(originalTools).map(([name, tool]) => [
+      name,
+      {
+        ...tool,
+        execute: async (input: any) => {
+          let normalizedInput = input;
+          if (typeof input === 'string') {
+            try {
+              normalizedInput = JSON.parse(input);
+            } catch {
+              // fallback: swap single quotes
+              try {
+                normalizedInput = JSON.parse(input.replace(/'/g, '"'));
+              } catch {
+                console.warn(
+                  `[ToolWrapper] Could not parse string args for tool ${name}:`,
+                  input,
+                );
+              }
+            }
+          }
+          return await tool.execute(normalizedInput);
+        },
+      },
+    ]),
+  );
+}
+
 export const runDiagramAgent: AgentRunner = ({
   selectedChatModel,
   uiMessages,
@@ -76,7 +107,7 @@ export const runDiagramAgent: AgentRunner = ({
   if (!hasTools) {
     console.warn('Diagram MCP tools not available, using fallback mode');
   }
-
+  const safeDiagramTools = wrapTools(diagramTools);
   const child = streamText({
     model: myProvider.languageModel(selectedChatModel),
     system: hasTools
@@ -88,7 +119,7 @@ export const runDiagramAgent: AgentRunner = ({
     ],
     stopWhen: stepCountIs(12), // Allow enough steps: analyze + construct code + generate diagram + return result
     tools: {
-      ...(diagramTools as Record<string, any>),
+      ...safeDiagramTools,
       requestClarification: requestClarification({
         dataStream,
         agentName: 'diagram_agent',
@@ -102,15 +133,15 @@ export const runDiagramAgent: AgentRunner = ({
       isEnabled: isProductionEnvironment,
       functionId: telemetryId,
     },
-    onFinish: (result) => {
-      const imagePath = `/api/images/${chatId}.png`;
-      // console.log('[MCP Tool Response] Image Path:', imagePath);
-      dataStream.write({
-        type: 'file',
-        url: imagePath,
-        mediaType: 'image/png', // Adjust if needed
-      });
-    },
+    // onFinish: (result) => {
+    //   const imagePath = `/api/images/${chatId}.png`;
+    //   // console.log('[MCP Tool Response] Image Path:', imagePath);
+    //   dataStream.write({
+    //     type: 'file',
+    //     url: imagePath,
+    //     mediaType: 'image/png', // Adjust if needed
+    //   });
+    // },
   });
 
   // Log all MCP tool call responses and stream image if present
