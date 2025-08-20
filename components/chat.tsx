@@ -243,7 +243,7 @@ export function Chat({
           parts: [
             {
               type: 'text',
-              text: `I have provided ${responses.length} clarification response(s). Please continue with the next step in the workflow.`,
+              text: `I have provided clarification response. Please continue with the next step in the workflow.`,
             },
           ],
         });

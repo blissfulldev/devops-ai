@@ -183,8 +183,10 @@ export function runSupervisorAgent({
           );
           continue;
         }
-        await sleep(80);
-        if (this.handleClarificationPause(agentName)) return;
+        
+        if (this.handleClarificationPause(agentName)) {
+          return;
+        }
         this.markAgentCompleted(agentName);
         ConversationStateManager.clearCurrentAgent(this.chatId);
       }
@@ -235,6 +237,7 @@ export function runSupervisorAgent({
         selectedChatModel: this.selectedChatModel,
         uiMessages: augmentedUIMessages,
         input: '',
+        session: session,
         dataStream: this.dataStream,
         telemetryId: `agent-${agentName}`,
         chatId: this.chatId,

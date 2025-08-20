@@ -88,9 +88,6 @@ function MultipleClarificationDialog({
               <div className="flex items-start gap-3 mb-3">
                 <User className="h-5 w-5 text-muted-foreground mt-0.5" />
                 <div className="flex-1">
-                  <div className="font-medium text-sm">
-                    Question {index + 1}
-                  </div>
                   <p className="text-sm text-muted-foreground mt-1">
                     {request.question}
                   </p>

@@ -44,9 +44,7 @@ const PurePreviewMessage = ({
 }) => {
   const [mode, setMode] = useState<'view' | 'edit'>('view');
 
-  const attachmentsFromMessage = message.parts.filter(
-    (part) => part.type === 'file',
-  );
+  // ...existing code...
 
   useDataStream();
 
@@ -81,29 +79,27 @@ const PurePreviewMessage = ({
               'min-h-96': message.role === 'assistant' && requiresScrollPadding,
             })}
           >
-            {attachmentsFromMessage.length > 0 && (
-              <div
-                data-testid={`message-attachments`}
-                className="flex flex-row justify-end gap-2"
-              >
-                {attachmentsFromMessage.map((attachment) => (
-                  <PreviewAttachment
-                    key={attachment.url}
-                    attachment={{
-                      name: attachment.filename ?? 'file',
-                      contentType: attachment.mediaType,
-                      url: attachment.url,
-                    }}
-                  />
-                ))}
-              </div>
-            )}
+            {/* Attachments are now rendered inline below as part of the message parts loop */}
 
             {(message.parts ?? [])
               .filter((p): p is NonNullable<typeof p> => p != null)
               .map((part, index) => {
                 const { type } = part;
                 const key = `message-${message.id}-part-${index}`;
+
+                if (type === 'file' && part.url) {
+                  // Render file/image attachments inline in the message stream
+                  return (
+                    <PreviewAttachment
+                      key={key}
+                      attachment={{
+                        name: part.filename ?? 'file',
+                        contentType: part.mediaType,
+                        url: part.url,
+                      }}
+                    />
+                  );
+                }
 
                 if (type === 'reasoning' && part.text?.trim().length > 0) {
                   return (
@@ -372,7 +368,7 @@ export const ThinkingMessage = () => {
 
         <div className="flex flex-col gap-2 w-full">
           <div className="flex flex-col gap-4 text-muted-foreground">
-            Hmm...
+            Planning...
           </div>
         </div>
       </div>

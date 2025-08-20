@@ -11,11 +11,14 @@ import { isProductionEnvironment } from '@/lib/constants';
 import type { AgentRunner } from './types';
 import { coreSystemPrompt } from './system-prompts';
 import { sanitizeUIMessages } from '@/lib/utils';
+import { createDocument } from '../tools/create-document';
+import { updateDocument } from '../tools/update-document';
 
 export const runCoreAgent: AgentRunner = ({
   selectedChatModel,
   uiMessages,
   input,
+  session,
   dataStream,
   telemetryId = 'agent-core',
   chatId,
@@ -36,6 +39,8 @@ export const runCoreAgent: AgentRunner = ({
           agentName: 'core_agent',
           chatId: chatId as string,
         }),
+        // createDocument: createDocument({ session, dataStream }),
+        // updateDocument: updateDocument({ session, dataStream }),
       },
       experimental_transform: smoothStream({ chunking: 'word' }),
       experimental_telemetry: {

@@ -5,18 +5,22 @@ import {
   convertToModelMessages,
 } from 'ai';
 import { mcpTools } from '@/lib/ai/tools/mcp/aws-mcp';
-import { writeTerraformToDisk } from '@/lib/ai/tools/write-terraform-to-disk';
 import { requestClarification } from '@/lib/ai/tools/request-clarification';
 import { myProvider } from '@/lib/ai/providers';
 import { isProductionEnvironment } from '@/lib/constants';
 import type { AgentRunner } from './types';
 import { terraformSystemPrompt } from './system-prompts';
 import { sanitizeUIMessages } from '@/lib/utils';
+import { createDocument } from '../tools/create-document';
+import { updateDocument } from '../tools/update-document';
+import { mkdirSync } from 'node:fs';
+import { writeTerraformToDisk } from '../tools/write-terraform-to-disk';
 
 export const runTerraformAgent: AgentRunner = ({
   selectedChatModel,
   uiMessages,
   input,
+  session,
   dataStream,
   telemetryId = 'agent-terraform',
   chatId,
@@ -29,26 +33,37 @@ export const runTerraformAgent: AgentRunner = ({
     console.warn('Terraform MCP tools not available, using fallback mode');
   }
 
+  // Set the actual directory path where Terraform files should be written
+  const actualProjectRoot = `/home/DevOps/Projects/devops-ai/workspace/terraform-projects/${chatId}`; // TODO: Replace with dynamic value as needed
+  mkdirSync(actualProjectRoot, { recursive: true });
+  // Get the parameterized prompt
+  const promptWithProjectRoot = terraformSystemPrompt(
+    `/app/terraform-projects/terraform-projects/${chatId}`,
+    actualProjectRoot,
+  );
+
   try {
     const child = streamText({
       model: myProvider.languageModel(selectedChatModel),
       system: hasTools
-        ? terraformSystemPrompt
-        : `${terraformSystemPrompt}\n\nNOTE: Some Terraform tools are currently unavailable. Focus on generating Terraform code using your knowledge.`,
+        ? promptWithProjectRoot
+        : `${promptWithProjectRoot}\n\nNOTE: Some Terraform tools are currently unavailable. Focus on generating Terraform code using your knowledge.`,
       messages: [
         ...convertToModelMessages(sanitizeUIMessages(uiMessages)),
         { role: 'user', content: input },
       ],
       tools: {
         ...(terraformTools as Record<string, any>),
-        writeTerraformToDisk: writeTerraformToDisk(),
         requestClarification: requestClarification({
           dataStream,
           agentName: 'terraform_agent',
           chatId: chatId as string,
         }),
+        writeTerraformToDisk: writeTerraformToDisk(actualProjectRoot),
+        // createDocument: createDocument({ session, dataStream }),
+        // updateDocument: updateDocument({ session, dataStream }),
       },
-      stopWhen: stepCountIs(6), // Allow enough steps: analyze + generate + write + validate + retry + finalize
+      stopWhen: stepCountIs(12), // Allow enough steps: analyze + generate + write + validate + retry + finalize
       experimental_transform: smoothStream({ chunking: 'word' }),
       experimental_telemetry: {
         isEnabled: isProductionEnvironment,

@@ -3,6 +3,7 @@ import {
   smoothStream,
   stepCountIs,
   convertToModelMessages,
+  type UIMessageStreamWriter,
 } from 'ai';
 import { mcpTools } from '@/lib/ai/tools/mcp/aws-mcp';
 import { requestClarification } from '@/lib/ai/tools/request-clarification';
@@ -11,14 +12,25 @@ import { isProductionEnvironment } from '@/lib/constants';
 import type { AgentRunner } from './types';
 import { diagramSystemPrompt } from './system-prompts';
 import { sanitizeUIMessages } from '@/lib/utils';
+import type { ChatMessage } from '@/lib/types';
+import type { Session } from 'next-auth';
 
 export const runDiagramAgent: AgentRunner = ({
   selectedChatModel,
   uiMessages,
+  session,
   input,
   dataStream,
   telemetryId = 'agent-diagram',
   chatId,
+}: {
+  selectedChatModel: string;
+  uiMessages: ChatMessage[];
+  session: Session;
+  input: string;
+  dataStream: UIMessageStreamWriter<ChatMessage>;
+  telemetryId?: string;
+  chatId?: string;
 }) => {
   // Check if diagram tools are available with better error handling
   let diagramTools = {};
@@ -65,51 +77,72 @@ export const runDiagramAgent: AgentRunner = ({
     console.warn('Diagram MCP tools not available, using fallback mode');
   }
 
-  try {
-    const child = streamText({
-      model: myProvider.languageModel(selectedChatModel),
-      system: hasTools
-        ? diagramSystemPrompt
-        : `${diagramSystemPrompt}\n\nNOTE: Diagram generation tools are currently unavailable. Please provide a detailed text-based architecture description instead.`,
-      messages: [
-        ...convertToModelMessages(sanitizeUIMessages(uiMessages)),
-        { role: 'user', content: input },
-      ],
-      stopWhen: stepCountIs(4), // Allow enough steps: analyze + construct code + generate diagram + return result
-      tools: {
-        ...(diagramTools as Record<string, any>),
-        requestClarification: requestClarification({
-          dataStream,
-          agentName: 'diagram_agent',
-          chatId: chatId as string,
-        }),
-      },
-      experimental_transform: smoothStream({ chunking: 'word' }),
-      experimental_telemetry: {
-        isEnabled: isProductionEnvironment,
-        functionId: telemetryId,
-      },
-    });
+  const child = streamText({
+    model: myProvider.languageModel(selectedChatModel),
+    system: hasTools
+      ? diagramSystemPrompt(chatId ?? 'default-diagram')
+      : `${diagramSystemPrompt(`${chatId ?? 'default-diagram'}`)}\n\nNOTE: Diagram generation tools are currently unavailable. Please provide a detailed text-based architecture description instead.`,
+    messages: [
+      ...convertToModelMessages(sanitizeUIMessages(uiMessages)),
+      { role: 'user', content: input },
+    ],
+    stopWhen: stepCountIs(12), // Allow enough steps: analyze + construct code + generate diagram + return result
+    tools: {
+      ...(diagramTools as Record<string, any>),
+      requestClarification: requestClarification({
+        dataStream,
+        agentName: 'diagram_agent',
+        chatId: chatId as string,
+      }),
+      // createDocument: createDocument({ session, dataStream }),
+      // updateDocument: updateDocument({ session, dataStream }),
+    },
+    experimental_transform: smoothStream({ chunking: 'word' }),
+    experimental_telemetry: {
+      isEnabled: isProductionEnvironment,
+      functionId: telemetryId,
+    },
+    onFinish: (result) => {
+      const imagePath = `/api/images/${chatId}.png`;
+      // console.log('[MCP Tool Response] Image Path:', imagePath);
+      dataStream.write({
+        type: 'file',
+        url: imagePath,
+        mediaType: 'image/png', // Adjust if needed
+      });
+    },
+  });
 
-    return child;
-  } catch (error) {
-    console.error('Error creating diagram agent stream:', error);
-    // Return a fallback stream that just explains the error
-    return streamText({
-      model: myProvider.languageModel(selectedChatModel),
-      system:
-        'You are having technical difficulties. Explain that diagram generation is temporarily unavailable.',
-      messages: [
-        {
-          role: 'user',
-          content:
-            'Diagram generation is currently experiencing technical difficulties. Please provide a detailed text description of the architecture instead.',
-        },
-      ],
-      experimental_telemetry: {
-        isEnabled: isProductionEnvironment,
-        functionId: `${telemetryId}-fallback`,
-      },
-    });
-  }
+  // Log all MCP tool call responses and stream image if present
+  // (async () => {
+  //   let foundImage = false;
+  //   for await (const chunk of child.fullStream) {
+  //     if (
+  //       chunk.type === 'tool-result' &&
+  //       chunk.toolName === 'generate_diagram' &&
+  //       chunk.output &&
+  //       typeof chunk.output === 'object' &&
+  //       'path' in chunk.output.structuredContent &&
+  //       chunk.output.structuredContent.status === 'success' &&
+  //       !foundImage
+  //     ) {
+  //       foundImage = true;
+  //       // console.log('[MCP Tool Response]', chunk);
+  //       console.log(
+  //         '[MCP Tool Response] Structured Content:',
+  //         chunk.output?.structuredContent?.path,
+  //       );
+  //       const imagePath = `/api/images/${String(chunk.output?.structuredContent?.path).split('/').pop()}`;
+  //       // console.log('[MCP Tool Response] Image Path:', imagePath);
+  //       dataStream.write({
+  //         type: 'file',
+  //         url: imagePath,
+  //         mediaType: 'image/png', // Adjust if needed
+  //       });
+  //     }
+  //   }
+  // })();
+
+  return child;
 };
+

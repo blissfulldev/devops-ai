@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { writeFile, mkdir } from 'node:fs/promises';
 import { join, dirname, resolve } from 'node:path';
 
-export const writeTerraformToDisk = () =>
+export const writeTerraformToDisk = (project_directory: string) =>
   tool({
     description: `Parses an XML-like string containing a Terraform project structure and writes the files to a dedicated 'workspace/terraform_project_latest' directory.
 This tool will overwrite any existing files in that directory. Use this tool to create or update a Terraform project.`,
@@ -31,16 +31,11 @@ This tool will overwrite any existing files in that directory. Use this tool to 
         }
 
         // Create output directory
-        const outDir = join(
-          process.cwd(),
-          'workspace',
-          'terraform_project_latest',
-        );
-        await mkdir(outDir, { recursive: true });
+        await mkdir(project_directory, { recursive: true });
 
         // Write each file
         for (const [path, content] of blocks) {
-          const filePath = join(outDir, path);
+          const filePath = join(project_directory, path);
           const fileDir = dirname(filePath);
 
           // Ensure directory exists
@@ -50,7 +45,7 @@ This tool will overwrite any existing files in that directory. Use this tool to 
           await writeFile(filePath, content.trim(), 'utf-8');
         }
 
-        const absolutePath = resolve(outDir);
+        const absolutePath = resolve(project_directory);
         return `Saved ${blocks.length} files to ${absolutePath}`;
       } catch (error) {
         return `Error writing files to disk: ${error instanceof Error ? error.message : 'Unknown error'}`;
