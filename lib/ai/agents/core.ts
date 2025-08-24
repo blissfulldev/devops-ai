@@ -11,8 +11,6 @@ import { isProductionEnvironment } from '@/lib/constants';
 import type { AgentRunner } from './types';
 import { coreSystemPrompt } from './system-prompts';
 import { sanitizeUIMessages } from '@/lib/utils';
-import { createDocument } from '../tools/create-document';
-import { updateDocument } from '../tools/update-document';
 
 export const runCoreAgent: AgentRunner = ({
   selectedChatModel,

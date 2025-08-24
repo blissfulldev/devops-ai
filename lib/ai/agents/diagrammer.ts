@@ -5,6 +5,7 @@ import {
   convertToModelMessages,
   type UIMessageStreamWriter,
 } from 'ai';
+import * as fs from 'node:fs/promises';
 import { mcpTools } from '@/lib/ai/tools/mcp/aws-mcp';
 import { requestClarification } from '@/lib/ai/tools/request-clarification';
 import { myProvider } from '@/lib/ai/providers';
@@ -49,7 +50,7 @@ function wrapTools(originalTools: Record<string, any>) {
 export const runDiagramAgent: AgentRunner = ({
   selectedChatModel,
   uiMessages,
-  session,
+  session: _session,
   input,
   dataStream,
   telemetryId = 'agent-diagram',
@@ -133,47 +134,143 @@ export const runDiagramAgent: AgentRunner = ({
       isEnabled: isProductionEnvironment,
       functionId: telemetryId,
     },
-    // onFinish: (result) => {
-    //   const imagePath = `/api/images/${chatId}.png`;
-    //   // console.log('[MCP Tool Response] Image Path:', imagePath);
-    //   dataStream.write({
-    //     type: 'file',
-    //     url: imagePath,
-    //     mediaType: 'image/png', // Adjust if needed
-    //   });
-    // },
+    onFinish: async (result) => {
+      console.log('[Diagram Agent] onFinish called with result:', result);
+
+      // Try multiple possible image file paths
+      const possiblePaths = [
+        `./workspace/generated-diagrams/${chatId}.png`,
+        `./workspace/${chatId}.png`,
+        `./generated-diagrams/${chatId}.png`,
+        `./diagrams/${chatId}.png`,
+      ];
+
+      let imageFound = false;
+
+      for (const imageFilePath of possiblePaths) {
+        try {
+          const imageBuffer = await fs.readFile(imageFilePath);
+          const base64Image = imageBuffer.toString('base64');
+          console.log(
+            `[Diagram Agent] Successfully read image from: ${imageFilePath}`,
+          );
+
+          dataStream.write({
+            type: 'file',
+            url: `data:image/png;base64,${base64Image}`,
+            mediaType: 'image/png',
+          });
+
+          imageFound = true;
+          break;
+        } catch (err) {
+          console.log(
+            `[Diagram Agent] Could not read image from ${imageFilePath}:`,
+            err instanceof Error ? err.message : String(err),
+          );
+        }
+      }
+
+      if (!imageFound) {
+        console.warn(
+          '[Diagram Agent] No diagram image found in any expected location',
+        );
+        // Send a completion message even if no image was found
+        dataStream.write({
+          type: 'text-delta',
+          delta:
+            '\n\n✅ Diagram generation completed. (No image file was generated)',
+          id: `completion-${Date.now()}`,
+        });
+      } else {
+        // Send completion message when image is found
+        dataStream.write({
+          type: 'text-delta',
+          delta: '\n\n✅ Diagram generated successfully!',
+          id: `success-${Date.now()}`,
+        });
+      }
+
+      // Always signal completion
+      console.log('[Diagram Agent] Signaling completion to UI');
+      dataStream.write({
+        type: 'finish',
+      });
+    },
   });
 
   // Log all MCP tool call responses and stream image if present
-  // (async () => {
-  //   let foundImage = false;
-  //   for await (const chunk of child.fullStream) {
-  //     if (
-  //       chunk.type === 'tool-result' &&
-  //       chunk.toolName === 'generate_diagram' &&
-  //       chunk.output &&
-  //       typeof chunk.output === 'object' &&
-  //       'path' in chunk.output.structuredContent &&
-  //       chunk.output.structuredContent.status === 'success' &&
-  //       !foundImage
-  //     ) {
-  //       foundImage = true;
-  //       // console.log('[MCP Tool Response]', chunk);
-  //       console.log(
-  //         '[MCP Tool Response] Structured Content:',
-  //         chunk.output?.structuredContent?.path,
-  //       );
-  //       const imagePath = `/api/images/${String(chunk.output?.structuredContent?.path).split('/').pop()}`;
-  //       // console.log('[MCP Tool Response] Image Path:', imagePath);
-  //       dataStream.write({
-  //         type: 'file',
-  //         url: imagePath,
-  //         mediaType: 'image/png', // Adjust if needed
-  //       });
-  //     }
-  //   }
-  // })();
+  (async () => {
+    let foundImage = false;
+    for await (const chunk of child.fullStream) {
+      // Log all tool results for debugging
+      if (chunk.type === 'tool-result') {
+        console.log(
+          `[Diagram Agent] Tool result - Name: ${chunk.toolName}, Type: ${chunk.type}`,
+        );
+        console.log(`[Diagram Agent] Tool output:`, chunk.output);
+      }
+
+      if (
+        chunk.type === 'tool-result' &&
+        chunk.toolName === 'generate_diagram' &&
+        chunk.output &&
+        typeof chunk.output === 'object' &&
+        !foundImage
+      ) {
+        foundImage = true;
+        console.log('[MCP Tool Response]', chunk);
+        console.log(
+          '[MCP Tool Response] Structured Content:',
+          (chunk.output as any)?.structuredContent,
+        );
+
+        // Handle different response formats
+        let imagePath: string | undefined;
+        const output = chunk.output as any;
+
+        if (output.structuredContent?.path) {
+          imagePath = `/api/images/${String(output.structuredContent.path).split('/').pop()}`;
+        } else if (output.path) {
+          imagePath = `/api/images/${String(output.path).split('/').pop()}`;
+        } else if (typeof output === 'string' && output.includes('.png')) {
+          // Handle case where output is a string path
+          imagePath = `/api/images/${output.split('/').pop()}`;
+        }
+
+        if (imagePath) {
+          console.log('[MCP Tool Response] Image Path:', imagePath);
+          dataStream.write({
+            type: 'file',
+            url: imagePath,
+            mediaType: 'image/png',
+          });
+
+          // Also send a completion message
+          dataStream.write({
+            type: 'text-delta',
+            delta:
+              '\n\n🎨 Diagram has been generated and is ready for viewing!',
+            id: `diagram-ready-${Date.now()}`,
+          });
+        } else {
+          console.warn(
+            '[MCP Tool Response] No valid image path found in output:',
+            chunk.output,
+          );
+          // Try to extract any useful information from the output
+          const output = chunk.output as any;
+          if (output.message || output.status) {
+            dataStream.write({
+              type: 'text-delta',
+              delta: `\n\n📋 Diagram tool response: ${output.message || output.status}`,
+              id: `tool-response-${Date.now()}`,
+            });
+          }
+        }
+      }
+    }
+  })();
 
   return child;
 };
-

@@ -1,16 +1,6 @@
-import {
-  streamText,
-  stepCountIs,
-  smoothStream,
-  type UIMessageStreamWriter,
-  type UIMessagePart,
-} from 'ai';
+import { streamText, generateObject, type UIMessageStreamWriter } from 'ai';
+import { z } from 'zod';
 import { myProvider } from '@/lib/ai/providers';
-import type {
-  CustomUIDataTypes,
-  ChatTools,
-  ClarificationResponse,
-} from '@/lib/types';
 import { isProductionEnvironment } from '@/lib/constants';
 import type { ChatMessage } from '@/lib/types';
 import type { ChatModel } from '@/lib/ai/models';
@@ -18,461 +8,432 @@ import type { AgentRunner } from './types';
 import { runDiagramAgent } from './diagrammer';
 import { runTerraformAgent } from './terraform';
 import { runCoreAgent } from './core';
-import { ConversationStateManager, AgentStatus } from '../conversation-state';
+
+import {
+  AgentStatus,
+  WorkflowPhase,
+  type AgentName,
+} from '../conversation-state';
+import { EnhancedStateManager } from '../enhanced-conversation-state';
 import type { Session } from 'next-auth';
-import { supervisorSystemPrompt } from './system-prompts';
-import type { AgentWorkflowState } from '../conversation-state';
+
+// Import our refactored modules
+import * as S from './enhanced-state-wrapper';
+import * as StateReconciliation from './state-reconciliation';
+import {
+  stringifyError,
+  getLastUserText,
+  extractClarificationResponses,
+  validateSupervisorParams,
+  sanitizeChatId,
+  calculateProcessingMetrics,
+} from './supervisor-utils';
 
 type RunSupervisorAgentParams = {
-  selectedChatModel: ChatModel['id'];
+  selectedChatModel: ChatModel;
   uiMessages: ChatMessage[];
-  session: Session;
+  session?: Session;
   dataStream: UIMessageStreamWriter<ChatMessage>;
   telemetryId?: string;
   chatId: string;
 };
 
-// Deterministic order
-const AGENT_ORDER = ['core_agent', 'diagram_agent', 'terraform_agent'] as const;
-type AgentName = (typeof AGENT_ORDER)[number];
-
-const agents: Record<AgentName, AgentRunner> = {
-  core_agent: runCoreAgent,
-  diagram_agent: runDiagramAgent,
-  terraform_agent: runTerraformAgent,
-};
-
+/**
+ * Main supervisor agent function - orchestrates the entire workflow
+ */
 export function runSupervisorAgent({
   selectedChatModel,
   uiMessages,
   session,
   dataStream,
-  telemetryId = 'supervisor-orchestrator',
+  telemetryId = 'supervisor-turn',
   chatId,
 }: RunSupervisorAgentParams) {
-  // Helper: normalize clarification response text from different shapes
-  function getClarificationAnswer(resp: ClarificationResponse | any): string {
-    if (!resp) return '[No answer provided]';
-    return (
-      resp.answer ??
-      resp.response ??
-      resp.text ??
-      resp.value ??
-      resp.answerText ??
-      '[No answer provided]'
-    );
+  const startTime = Date.now();
+
+  // Validate parameters
+  const validation = validateSupervisorParams({
+    selectedChatModel,
+    uiMessages,
+    dataStream,
+    session,
+  });
+
+  if (!validation.isValid) {
+    console.error('[Supervisor] Invalid parameters:', validation.errors);
+    dataStream.write({
+      type: 'error',
+      errorText: `Invalid parameters: ${validation.errors.join(', ')}`,
+    });
+    return;
   }
 
-  // Helper: small sleep to allow streams to flush and avoid token interleaving
-  const sleep = (ms: number) => new Promise((res) => setTimeout(res, ms));
-
-  // Helper: stringify unknown errors safely
-  function stringifyError(err: unknown): string {
-    if (err instanceof Error) {
-      return err.stack ?? err.message ?? String(err);
-    }
+  async function runTurn() {
     try {
-      return JSON.stringify(err);
-    } catch {
-      return String(err);
-    }
-  }
+      console.log(
+        `[Supervisor] Starting turn for chat: ${sanitizeChatId(chatId)}`,
+      );
 
-  // Outer notifier helper — renamed to avoid shadowing with class method
-  function notifyUI(text: string) {
-    try {
-      const notifier = streamText({
-        model: myProvider.languageModel(selectedChatModel),
-        system:
-          'SYSTEM NOTE: You are a notifier. Reply with exactly the content given in the user message as a single assistant message and do NOT call any tools or add commentary.',
-        messages: [{ role: 'user', content: text }],
-        stopWhen: stepCountIs(1),
-        experimental_transform: smoothStream({ chunking: 'word' }),
-        experimental_telemetry: {
-          isEnabled: isProductionEnvironment,
-          functionId: telemetryId
-            ? `${telemetryId}-notifier`
-            : 'supervisor-notifier',
-        },
-      });
-
-      try {
-        dataStream.merge(notifier.toUIMessageStream({ sendReasoning: false }));
-      } catch (err) {
-        console.error(
-          'Error merging notifier stream into dataStream:',
-          stringifyError(err),
+      // Initialize enhanced state if needed
+      if (session) {
+        EnhancedStateManager.updateEnhancedState(
+          chatId,
+          () => {
+            // Note: sessionId and userId are not part of the EnhancedConversationState interface
+            // This would need to be added to the interface if needed
+            console.log(
+              'Session initialized for user:',
+              session.user?.id || 'anonymous',
+            );
+          },
+          'Initialized session information',
         );
       }
 
-      notifier.consumeStream().catch((err) => {
-        console.error('Notifier stream error:', stringifyError(err));
-      });
-    } catch (err) {
-      console.error(
-        'Failed to push UI notice via notifier stream:',
-        stringifyError(err),
-      );
-    }
-  }
-
-  // Supervisor orchestrator class (explicitly receives session)
-  class SupervisorOrchestrator {
-    constructor(
-      private selectedChatModel: ChatModel['id'],
-      private uiMessages: ChatMessage[],
-      private dataStream: UIMessageStreamWriter<ChatMessage>,
-      private chatId: string,
-      private session: Session,
-    ) {}
-
-    toUIMessageStream() {
-      const compositeStream = {
-        merge: (childStream: any) => {
-          if (typeof this.dataStream.merge === 'function') {
-            this.dataStream.merge(childStream);
-          }
-        },
-        consumeStream: async () => {
-          await this.runOrchestration();
-        },
-      };
-      return compositeStream;
-    }
-
-    async runOrchestration() {
-      this.log('Starting supervisor orchestration for chat', this.chatId);
-
-      // If already waiting, notify and return
-      if (ConversationStateManager.isWaitingForClarification(this.chatId)) {
-        const pending = ConversationStateManager.getPendingClarifications(
-          this.chatId,
+      // Perform comprehensive state reconciliation with error recovery
+      const reconciliationResult =
+        await StateReconciliation.performStateReconciliation(chatId);
+      if (!reconciliationResult.success) {
+        console.warn(
+          '[Supervisor] State reconciliation had issues:',
+          reconciliationResult.issuesFound,
         );
-        this.pushUiNotice(
-          `Workflow is paused. Waiting for user to answer ${pending.length} clarification(s).`,
+      }
+
+      // Process any clarification responses from the UI messages
+      const clarificationResponses = extractClarificationResponses(uiMessages);
+      if (clarificationResponses.length > 0) {
+        console.log(
+          `[Supervisor] Processing ${clarificationResponses.length} clarification responses`,
+        );
+
+        for (const response of clarificationResponses) {
+          S.addClarificationResponse(
+            chatId,
+            response,
+            S.getState(chatId).currentAgent || 'core_agent',
+          );
+        }
+
+        // Check if we can resume workflow
+        reconcileAfterClarificationIfNeeded(chatId);
+      }
+
+      // Check if still waiting for clarifications
+      const state = S.getState(chatId);
+      if (state.isWaitingForClarification) {
+        const pending = state.pendingClarifications;
+        const pendingArray = Array.from(pending.values());
+        const firstPending = pendingArray[0];
+        const agentName =
+          firstPending?.agentName || state.currentAgent || 'the previous agent';
+
+        await pushGuidedNotice(
+          selectedChatModel,
+          dataStream,
+          `Workflow is paused. ${agentName} requested ${pending.size} clarification(s).`,
+          {
+            type: 'waiting',
+            agentName,
+            pendingCount: pending.size,
+            pendingClarifications: pendingArray,
+          },
         );
         return;
       }
 
-      // Determine start index: resume from pausedAgent if present, else first non-completed agent
-      let startIndex = 0;
-      const paused = ConversationStateManager.getPausedAgent(this.chatId);
-      if (paused) {
-        const idx = AGENT_ORDER.indexOf(paused as AgentName);
-        startIndex = idx >= 0 ? idx : 0;
-        this.log(
-          'Resuming from pausedAgent:',
-          paused,
-          'startIndex:',
-          startIndex,
+      // Check if workflow is completed
+      if (state.workflowCompleted) {
+        await handleCompletedWorkflow(
+          selectedChatModel,
+          uiMessages,
+          dataStream,
+          chatId,
+          telemetryId,
         );
-      } else {
-        const progress = ConversationStateManager.getWorkflowProgress(
-          this.chatId,
-        );
-        for (let i = 0; i < AGENT_ORDER.length; i++) {
-          if (!progress.completedAgents.includes(AGENT_ORDER[i])) {
-            startIndex = i;
-            break;
-          }
-        }
-        this.log(
-          'No pausedAgent; starting from first non-completed index:',
-          startIndex,
-        );
+        return;
       }
 
-      for (let i = startIndex; i < AGENT_ORDER.length; i++) {
-        const agentName = AGENT_ORDER[i];
-
-        // Read canonical state
-        const state = ConversationStateManager.getState(this.chatId);
-        const agentStatus =
-          state.agentStates[agentName as keyof AgentWorkflowState];
-
-        // If agent is already running, skip to avoid parallel start
-        if (agentStatus === AgentStatus.RUNNING) {
-          this.log(
-            `Skipping ${agentName} because it's already RUNNING (prevent parallel start)`,
-          );
-          continue;
-        }
-
-        // If agent is waiting for clarification, only resume if this is the pausedAgent and waiting is cleared
-        if (agentStatus === AgentStatus.WAITING_FOR_CLARIFICATION) {
-          const pausedAgent = ConversationStateManager.getPausedAgent(
-            this.chatId,
-          );
-          const stillWaiting =
-            ConversationStateManager.isWaitingForClarification(this.chatId);
-          if (pausedAgent === agentName && !stillWaiting) {
-            this.log(
-              `Resuming ${agentName} after clarifications as pausedAgent`,
-            );
-            // allowed to continue and set currentAgent below
-          } else {
-            // Not the right time to start/resume this agent
-            this.log(
-              `Not resuming ${agentName}. pausedAgent=${pausedAgent}, stillWaiting=${stillWaiting}`,
-            );
-            // If there is a pausedAgent different from this agent, skip and continue to next iteration
-            // (do not start a new instance)
-            continue;
-          }
-        }
-
-        if (this.isAgentCompleted(agentName)) {
-          this.log(`Skipping ${agentName} (already completed)`);
-          continue;
-        }
-
-        // OK to start/resume: update currentAgent -> this marks agent RUNNING
-        ConversationStateManager.setCurrentAgent(this.chatId, agentName);
-
-        this.log(`Running agent: ${agentName}`);
-        const augmentedUIMessages = this.buildAugmentedUIMessages();
-
-        let child: ReturnType<AgentRunner>;
-        try {
-          child = this.runAgent(agentName, augmentedUIMessages);
-        } catch (err) {
-          this.pushUiNotice(
-            `Agent ${agentName} failed to start: ${stringifyError(err)}`,
-          );
-          // mark failed via updateState
-          try {
-            ConversationStateManager.updateState(this.chatId, (s) => {
-              if ((agentName as keyof AgentWorkflowState) in s.agentStates) {
-                s.agentStates[agentName as keyof AgentWorkflowState] =
-                  AgentStatus.FAILED;
-              }
-            });
-          } catch (mErr) {
-            console.error('Error marking agent failed:', stringifyError(mErr));
-          }
-          // ensure currentAgent cleared so supervisor can retry later
-          ConversationStateManager.clearCurrentAgent(this.chatId);
-          continue;
-        }
-
-        // Merge child stream (safe-guard)
-        try {
-          this.dataStream.merge(
-            child.toUIMessageStream({ sendReasoning: true }),
-          );
-        } catch (err) {
-          console.error(
-            `Supervisor: error merging ${agentName} child stream:`,
-            stringifyError(err),
-          );
-        }
-
-        // Await child completion or pause due to clarifications
-        try {
-          await child.consumeStream();
-        } catch (err) {
-          this.pushUiNotice(
-            `Agent ${agentName} encountered an error during execution.`,
-          );
-          try {
-            ConversationStateManager.updateState(this.chatId, (s) => {
-              if ((agentName as keyof AgentWorkflowState) in s.agentStates) {
-                s.agentStates[agentName as keyof AgentWorkflowState] =
-                  AgentStatus.FAILED;
-              }
-            });
-          } catch (mErr) {
-            console.error(
-              'Error marking agent failed after stream error:',
-              stringifyError(mErr),
-            );
-          }
-          ConversationStateManager.clearCurrentAgent(this.chatId);
-          return;
-        }
-
-        // Small pause to allow streaming infra to flush
-        await sleep(80);
-
-        // If child requested clarifications (state updated by requestClarification), pause orchestration
-        if (this.handleClarificationPause(agentName)) {
-          this.log('Paused and recorded pausedAgent:', agentName);
-          return;
-        }
-
-        // Mark agent completed if not already
-        this.markAgentCompleted(agentName);
-
-        // If this agent equals pausedAgent (corner case), clear pausedAgent now that it's done
-        const currentPaused = ConversationStateManager.getPausedAgent(
-          this.chatId,
+      // Determine next agent to run
+      const nextAgent = await determineNextAgent(chatId, selectedChatModel);
+      if (!nextAgent) {
+        await pushGuidedNotice(
+          selectedChatModel,
+          dataStream,
+          'Workflow completed successfully!',
+          { type: 'completion' },
         );
-        if (currentPaused === agentName) {
-          ConversationStateManager.clearPausedAgent(this.chatId);
-        }
-
-        ConversationStateManager.clearCurrentAgent(this.chatId);
+        S.setWorkflowCompleted(chatId, true);
+        return;
       }
 
-      // All agents done -> mark workflow completed
-      this.markWorkflowCompleted();
-      this.pushUiNotice(
-        'Workflow completed: core_agent, diagram_agent, terraform_agent have run successfully.',
-      );
-    }
+      // Update current agent and run it
+      S.updateCurrentAgent(chatId, nextAgent);
+      S.updateAgentStatus(chatId, nextAgent, AgentStatus.RUNNING);
 
-    buildAugmentedUIMessages(): ChatMessage[] {
-      const rawClarResponses =
-        ConversationStateManager.getAllClarificationResponses(this.chatId) ||
-        [];
-      const clarificationResponses = rawClarResponses.filter(
-        Boolean,
-      ) as ClarificationResponse[];
+      console.log(`[Supervisor] Running agent: ${nextAgent}`);
 
-      return [
-        ...this.uiMessages,
-        ...(clarificationResponses
-          .map((r) => {
-            if (!r || typeof r !== 'object') return null;
-            const answerText = getClarificationAnswer(r);
-            return {
-              id: r.id ?? `clar-${Math.random().toString(36).slice(2)}`,
-              role: 'user' as const,
-              parts: [
-                {
-                  type: 'text',
-                  text: `Clarification response: ${answerText}`,
-                } as UIMessagePart<CustomUIDataTypes, ChatTools>,
-              ],
-              metadata: {
-                createdAt: (r.timestamp as string) ?? new Date().toISOString(),
-              },
-            } as ChatMessage;
-          })
-          .filter(Boolean) as ChatMessage[]),
-      ];
-    }
-
-    runAgent(
-      agentName: AgentName,
-      augmentedUIMessages: ChatMessage[],
-    ): ReturnType<AgentRunner> {
-      const runnerFn = agents[agentName];
-      if (typeof runnerFn !== 'function') {
-        throw new Error(`Runner not available for ${agentName}`);
-      }
-      return runnerFn({
-        selectedChatModel: this.selectedChatModel,
-        uiMessages: augmentedUIMessages,
-        input: '',
-        session: this.session,
-        dataStream: this.dataStream,
-        telemetryId: `agent-${agentName}`,
-        chatId: this.chatId,
+      await runAgentByName(nextAgent, {
+        selectedChatModel,
+        uiMessages,
+        session,
+        dataStream,
+        telemetryId,
+        chatId,
       });
-    }
 
-    isAgentCompleted(agentName: AgentName): boolean {
-      const s = ConversationStateManager.getState(this.chatId);
-      return s.agentStates?.[agentName] === AgentStatus.COMPLETED;
-    }
+      // Update agent status after completion
+      S.updateAgentStatus(chatId, nextAgent, AgentStatus.COMPLETED);
 
-    handleClarificationPause(agentName: AgentName): boolean {
-      const pendingAfter = ConversationStateManager.getPendingClarifications(
-        this.chatId,
-      ).length;
-      const waiting = ConversationStateManager.isWaitingForClarification(
-        this.chatId,
-      );
-      if (waiting && pendingAfter > 0) {
-        // Ensure pausedAgent is set (idempotent)
-        ConversationStateManager.setPausedAgent(this.chatId, agentName);
-        // this.pushUiNotice(
-        //   `Agent ${agentName} has asked for ${pendingAfter} clarification(s). Workflow is paused until the user answers.`,
-        // );
-        return true;
-      }
-      return false;
-    }
+      // Calculate and log metrics
+      const metrics = calculateProcessingMetrics(startTime, uiMessages.length);
+      console.log(`[Supervisor] Turn completed in ${metrics.processingTime}ms`);
+    } catch (error) {
+      console.error('[Supervisor] Error during turn:', stringifyError(error));
 
-    markAgentCompleted(agentName: AgentName) {
-      const progress = ConversationStateManager.getWorkflowProgress(
-        this.chatId,
-      );
-      if (!progress.completedAgents.includes(agentName)) {
-        ConversationStateManager.markAgentCompleted(this.chatId, agentName);
-      }
-    }
-
-    markWorkflowCompleted() {
+      // Attempt state recovery
       try {
-        // proper write
-        ConversationStateManager.updateState(this.chatId, (s) => {
-          ConversationStateManager.getState(this.chatId).workflowPhase =
-            s.workflowPhase;
-          s.workflowPhase = s.workflowPhase ?? s.workflowPhase;
+        await StateReconciliation.performStateReconciliation(chatId, {
+          forceReset: true,
         });
-        // Simpler, actually set it:
-        ConversationStateManager.updateState(this.chatId, (s) => {
-          s.workflowPhase = s.workflowPhase = (s.workflowPhase ??
-            'completed') as any;
-        });
-        // Finally correct set:
-        ConversationStateManager.updateState(this.chatId, (s) => {
-          s.workflowPhase = s.workflowPhase = (
-            typeof s.workflowPhase === 'string'
-              ? (s.workflowPhase as any)
-              : 'completed'
-          ) as any;
-        });
-        // To avoid the above confusion, set to completed directly:
-        ConversationStateManager.updateState(this.chatId, (s) => {
-          s.workflowPhase = 'completed' as any;
-        });
-      } catch (err) {
-        // fallback — set via safe small update
-        try {
-          ConversationStateManager.updateState(this.chatId, (s) => {
-            s.workflowPhase = 'completed' as any;
-          });
-        } catch (e) {
-          console.error(
-            'Error setting workflow to completed:',
-            stringifyError(e),
-          );
-        }
-      }
-      // Simpler reliable call: set directly
-      try {
-        ConversationStateManager.updateState(this.chatId, (s) => {
-          s.workflowPhase = 'completed' as any;
-        });
-      } catch (err) {
+      } catch (recoveryError) {
         console.error(
-          'Error setting workflow to completed (final attempt):',
-          stringifyError(err),
+          '[Supervisor] State recovery failed:',
+          stringifyError(recoveryError),
         );
       }
-    }
 
-    pushUiNotice(text: string) {
-      notifyUI(text);
-    }
-
-    log(...args: any[]) {
-      console.log('[Supervisor]', ...args);
+      dataStream.write({
+        type: 'error',
+        errorText: `Supervisor error: ${stringifyError(error)}`,
+      });
     }
   }
 
-  // Instantiate and return composite stream (pass session)
-  const orchestrator = new SupervisorOrchestrator(
-    selectedChatModel,
-    uiMessages,
-    dataStream,
-    chatId,
-    session,
-  );
-  return {
-    toUIMessageStream: () => orchestrator.toUIMessageStream(),
+  return streamText({
+    model: myProvider.languageModel(selectedChatModel.id),
+    system: `You are the Supervisor Agent coordinating a multi-agent workflow.
+    
+Your role is to:
+1. Orchestrate the workflow between core_agent, diagram_agent, and terraform_agent
+2. Handle clarification requests and responses
+3. Provide guidance to users about the current workflow state
+4. Ensure smooth transitions between workflow phases
+
+Current workflow phases:
+- PLANNING: Core agent gathers requirements and creates project structure
+- DESIGN: Diagram agent creates architecture diagrams
+- IMPLEMENTATION: Terraform agent generates infrastructure code
+
+Always provide clear, helpful guidance about what's happening and what the user should expect next.`,
+    messages: uiMessages.map((m) => {
+      const message = m as any;
+      return {
+        role: message.role,
+        content:
+          typeof message.content === 'string'
+            ? message.content
+            : JSON.stringify(message.content || ''),
+      };
+    }),
+    onFinish: async () => {
+      await runTurn();
+    },
+    experimental_telemetry: {
+      isEnabled: !isProductionEnvironment,
+      functionId: telemetryId,
+    },
+  });
+}
+
+/**
+ * Reconcile state after clarification responses
+ */
+function reconcileAfterClarificationIfNeeded(chatId: string): void {
+  const state = S.getState(chatId);
+
+  if (state.isWaitingForClarification && state.pendingClarifications.size > 0) {
+    // Check if all pending clarifications have responses
+    const pendingArray = Array.from(state.pendingClarifications.values());
+    const responsesArray = Array.from(state.clarificationResponses || []);
+
+    const hasAllResponses = pendingArray.every((clarification) => {
+      return responsesArray.some(
+        (response: any) => response.questionId === clarification.id,
+      );
+    });
+
+    if (hasAllResponses) {
+      console.log(
+        '[Supervisor] All clarifications answered, resuming workflow',
+      );
+      S.setWaitingForClarification(chatId, false);
+
+      // Clear pending clarifications
+      EnhancedStateManager.updateEnhancedState(
+        chatId,
+        (state) => {
+          state.pendingClarifications.clear();
+        },
+        'Cleared resolved clarifications',
+      );
+    }
+  }
+}
+
+/**
+ * Handle completed workflow state
+ */
+async function handleCompletedWorkflow(
+  selectedChatModel: ChatModel,
+  uiMessages: ChatMessage[],
+  dataStream: UIMessageStreamWriter<ChatMessage>,
+  chatId: string,
+  telemetryId: string,
+): Promise<void> {
+  const lastUserText = getLastUserText(uiMessages);
+
+  if (lastUserText.trim()) {
+    // User has a new request, switch to adhoc mode
+    console.log('[Supervisor] Switching to adhoc mode for new user request');
+
+    S.updateWorkflowPhase(chatId, WorkflowPhase.PLANNING);
+    S.setWorkflowCompleted(chatId, false);
+
+    // Run core agent for the new request
+    await runCoreAgent({
+      selectedChatModel: selectedChatModel.id,
+      uiMessages,
+      input: lastUserText,
+      session: {} as Session,
+      dataStream,
+      telemetryId,
+      chatId,
+    });
+  } else {
+    await pushGuidedNotice(
+      selectedChatModel,
+      dataStream,
+      'Workflow completed! You can ask follow-up questions or start a new project.',
+      { type: 'completion' },
+    );
+  }
+}
+
+/**
+ * Determine the next agent to run based on workflow state
+ */
+async function determineNextAgent(
+  chatId: string,
+  selectedChatModel: ChatModel,
+): Promise<AgentName | null> {
+  const state = S.getState(chatId);
+
+  // Use workflow orchestrator to determine next agent
+  try {
+    const recommendations = await S.getWorkflowRecommendations(
+      chatId,
+      selectedChatModel.id,
+    );
+
+    if (recommendations.nextAgent) {
+      return recommendations.nextAgent as AgentName;
+    }
+  } catch (error) {
+    console.warn('[Supervisor] Failed to get workflow recommendations:', error);
+  }
+
+  // Fallback logic based on current phase
+  switch (state.workflowPhase) {
+    case WorkflowPhase.PLANNING:
+      return 'core_agent';
+    case WorkflowPhase.DESIGN:
+      return 'diagram_agent';
+    case WorkflowPhase.IMPLEMENTATION:
+      return 'terraform_agent';
+    default:
+      return null;
+  }
+}
+
+/**
+ * Run agent by name
+ */
+async function runAgentByName(
+  agentName: AgentName,
+  params: RunSupervisorAgentParams,
+): Promise<void> {
+  const agentRunners: Record<AgentName, AgentRunner> = {
+    core_agent: runCoreAgent,
+    diagram_agent: runDiagramAgent,
+    terraform_agent: runTerraformAgent,
   };
+
+  const runner = agentRunners[agentName];
+  if (!runner) {
+    throw new Error(`Unknown agent: ${agentName}`);
+  }
+
+  // Extract input from the last user message
+  const lastUserText = getLastUserText(params.uiMessages);
+
+  // Convert params to match AgentRunner interface
+  const agentParams = {
+    selectedChatModel: params.selectedChatModel.id,
+    uiMessages: params.uiMessages,
+    input: lastUserText,
+    session: params.session || ({} as Session),
+    dataStream: params.dataStream,
+    telemetryId: params.telemetryId,
+    chatId: params.chatId,
+  };
+
+  await runner(agentParams);
+}
+
+/**
+ * Push guided notice to user with AI-generated content
+ */
+async function pushGuidedNotice(
+  selectedChatModel: ChatModel,
+  dataStream: UIMessageStreamWriter<ChatMessage>,
+  message: string,
+  context: any,
+): Promise<void> {
+  try {
+    // Generate enhanced guidance using AI
+    const guidance = await generateObject({
+      model: myProvider.languageModel(selectedChatModel.id),
+      schema: z.object({
+        message: z.string(),
+        nextSteps: z.array(z.string()),
+        estimatedTime: z.string().optional(),
+        tips: z.array(z.string()).optional(),
+      }),
+      prompt: `Generate helpful guidance for this workflow situation:
+      
+      Base message: "${message}"
+      Context: ${JSON.stringify(context)}
+      
+      Provide a clear, encouraging message with specific next steps the user should take.`,
+      system:
+        'You are a helpful workflow assistant. Provide clear, actionable guidance.',
+    });
+
+    // Write as a text message with structured data
+    dataStream.write({
+      type: 'data-appendMessage',
+      data: `${guidance.object.message}\n\nNext steps:\n${guidance.object.nextSteps.map((step) => `• ${step}`).join('\n')}${guidance.object.estimatedTime ? `\n\nEstimated time: ${guidance.object.estimatedTime}` : ''}${guidance.object.tips ? `\n\nTips:\n${guidance.object.tips.map((tip) => `• ${tip}`).join('\n')}` : ''}`,
+    });
+  } catch (error) {
+    console.warn(
+      '[Supervisor] Failed to generate AI guidance, using fallback:',
+      error,
+    );
+
+    dataStream.write({
+      type: 'data-appendMessage',
+      data: message,
+    });
+  }
 }

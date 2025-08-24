@@ -86,7 +86,7 @@ function MultipleClarificationDialog({
           {requests.map((request, index) => (
             <div key={request.id} className="border rounded-lg p-4">
               <div className="flex items-start gap-3 mb-3">
-                <User className="h-5 w-5 text-muted-foreground mt-0.5" />
+                <User className="size-5 text-muted-foreground mt-0.5" />
                 <div className="flex-1">
                   <p className="text-sm text-muted-foreground mt-1">
                     {request.question}

@@ -23,6 +23,7 @@ import { after } from 'next/server';
 import { ChatSDKError } from '@/lib/errors';
 import type { ChatMessage } from '@/lib/types';
 import type { ChatModel } from '@/lib/ai/models';
+import { chatModels } from '@/lib/ai/models';
 import type { VisibilityType } from '@/components/visibility-selector';
 
 export const maxDuration = 60;
@@ -109,10 +110,13 @@ export async function POST(request: Request) {
     }
 
     const messagesFromDb = await getMessagesByChatId({ id });
-    
+
     // Validate message structure before processing
     if (!message.parts || !Array.isArray(message.parts)) {
-      console.error('Invalid message structure - missing or invalid parts:', message);
+      console.error(
+        'Invalid message structure - missing or invalid parts:',
+        message,
+      );
       return new ChatSDKError('bad_request:api').toResponse();
     }
 
@@ -122,7 +126,7 @@ export async function POST(request: Request) {
         console.error('Invalid message part structure:', part);
         return new ChatSDKError('bad_request:api').toResponse();
       }
-      
+
       if (part.type === 'text') {
         if (
           !('text' in part) ||
@@ -168,8 +172,18 @@ export async function POST(request: Request) {
     const stream = createUIMessageStream({
       execute: async ({ writer: dataStream }) => {
         try {
+          // Find the chat model object from the ID
+          const chatModel = chatModels.find(
+            (model) => model.id === selectedChatModel,
+          );
+          if (!chatModel) {
+            throw new Error(
+              `Chat model with ID ${selectedChatModel} not found`,
+            );
+          }
+
           const result = runSupervisorAgent({
-            selectedChatModel,
+            selectedChatModel: chatModel,
             uiMessages,
             session: session as Session,
             dataStream,
@@ -177,8 +191,16 @@ export async function POST(request: Request) {
             chatId: id,
           });
 
-          const supervisorStream = result.toUIMessageStream();
-          await supervisorStream.consumeStream();
+          if (result) {
+            // The supervisor agent returns a streamText result
+            // We need to consume the stream properly
+            for await (const chunk of result.textStream) {
+              // The supervisor handles its own dataStream writes
+              // so we don't need to do anything with the chunks here
+            }
+          } else {
+            throw new Error('Supervisor agent failed to initialize');
+          }
         } catch (error: any) {
           console.error('Error in supervisor agent execution:', error);
 

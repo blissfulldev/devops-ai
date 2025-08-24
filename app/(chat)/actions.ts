@@ -23,7 +23,10 @@ export async function generateTitleFromUserMessage({
   try {
     // Validate message structure
     if (!message || !message.parts || !Array.isArray(message.parts)) {
-      console.error('Invalid message structure in generateTitleFromUserMessage:', message);
+      console.error(
+        'Invalid message structure in generateTitleFromUserMessage:',
+        message,
+      );
       return 'New Chat';
     }
 

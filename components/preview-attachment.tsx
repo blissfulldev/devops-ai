@@ -34,7 +34,7 @@ export const PreviewAttachment = ({
                 viewBox="0 0 24 24"
                 strokeWidth={2}
                 stroke="currentColor"
-                className="w-5 h-5 text-zinc-700"
+                className="size-5 text-zinc-700"
               >
                 <path
                   strokeLinecap="round"

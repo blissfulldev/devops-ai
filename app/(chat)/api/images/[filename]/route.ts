@@ -4,9 +4,9 @@ import { statSync, readFileSync } from 'node:fs';
 
 export async function GET(
   req: NextRequest,
-  context: { params: { filename: string } },
+  context: { params: Promise<{ filename: string }> },
 ) {
-  const { filename } = await context.params; // <-- await here
+  const { filename } = await context.params;
   const imagePath = join(
     process.cwd(),
     'workspace/generated-diagrams',

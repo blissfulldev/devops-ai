@@ -1,7 +1,7 @@
-"use client"
+'use client';
 
-import * as React from "react"
-import { cn } from "@/lib/utils"
+import * as React from 'react';
+import { cn } from '@/lib/utils';
 
 interface RadioGroupContextValue {
   value?: string;
@@ -23,26 +23,27 @@ const RadioGroup = React.forwardRef<HTMLDivElement, RadioGroupProps>(
       <RadioGroupContext.Provider value={{ value, onValueChange, name }}>
         <div
           ref={ref}
-          className={cn("grid gap-2", className)}
+          className={cn('grid gap-2', className)}
           role="radiogroup"
           {...props}
         >
           {children}
         </div>
       </RadioGroupContext.Provider>
-    )
-  }
-)
-RadioGroup.displayName = "RadioGroup"
+    );
+  },
+);
+RadioGroup.displayName = 'RadioGroup';
 
-interface RadioGroupItemProps extends React.InputHTMLAttributes<HTMLInputElement> {
+interface RadioGroupItemProps
+  extends React.InputHTMLAttributes<HTMLInputElement> {
   value: string;
 }
 
 const RadioGroupItem = React.forwardRef<HTMLInputElement, RadioGroupItemProps>(
   ({ className, value, ...props }, ref) => {
     const context = React.useContext(RadioGroupContext);
-    
+
     return (
       <input
         ref={ref}
@@ -52,14 +53,14 @@ const RadioGroupItem = React.forwardRef<HTMLInputElement, RadioGroupItemProps>(
         checked={context.value === value}
         onChange={() => context.onValueChange?.(value)}
         className={cn(
-          "aspect-square h-4 w-4 rounded-full border border-primary text-primary ring-offset-background focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50",
-          className
+          'aspect-square h-4 w-4 rounded-full border border-primary text-primary ring-offset-background focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50',
+          className,
         )}
         {...props}
       />
-    )
-  }
-)
-RadioGroupItem.displayName = "RadioGroupItem"
+    );
+  },
+);
+RadioGroupItem.displayName = 'RadioGroupItem';
 
-export { RadioGroup, RadioGroupItem }
+export { RadioGroup, RadioGroupItem };

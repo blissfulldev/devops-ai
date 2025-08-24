@@ -35,7 +35,7 @@ export async function POST(request: NextRequest) {
     }
 
     const body = await request.json();
-    
+
     // Try to parse as batch response first, then fallback to single response
     let responses: Array<{
       id: string;
@@ -84,8 +84,9 @@ export async function POST(request: NextRequest) {
     });
 
     // Check if we can resume the workflow
-    const isStillWaiting = ConversationStateManager.isWaitingForClarification(chatId);
-    
+    const isStillWaiting =
+      ConversationStateManager.isWaitingForClarification(chatId);
+
     return NextResponse.json({
       success: true,
       canResume: !isStillWaiting,
@@ -96,18 +97,18 @@ export async function POST(request: NextRequest) {
     });
   } catch (error) {
     console.error('Error handling clarification response:', error);
-    
+
     // Provide more specific error messages
     if (error instanceof SyntaxError) {
       return NextResponse.json(
         { error: 'Invalid JSON in request body' },
-        { status: 400 }
+        { status: 400 },
       );
     }
-    
+
     return NextResponse.json(
       { error: 'Failed to process clarification response' },
-      { status: 500 }
+      { status: 500 },
     );
   }
 }
@@ -126,9 +127,11 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Chat ID required' }, { status: 400 });
     }
 
-    const pendingClarifications = ConversationStateManager.getPendingClarifications(chatId);
+    const pendingClarifications =
+      ConversationStateManager.getPendingClarifications(chatId);
     console.log('Pending clarifications:', pendingClarifications);
-    const isWaiting = ConversationStateManager.isWaitingForClarification(chatId);
+    const isWaiting =
+      ConversationStateManager.isWaitingForClarification(chatId);
 
     return NextResponse.json({
       isWaiting,
@@ -139,7 +142,7 @@ export async function GET(request: NextRequest) {
     console.error('Error fetching clarification status:', error);
     return NextResponse.json(
       { error: 'Failed to fetch clarification status' },
-      { status: 500 }
+      { status: 500 },
     );
   }
 }
