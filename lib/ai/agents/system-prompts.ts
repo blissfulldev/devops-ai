@@ -114,7 +114,8 @@ Workflow Guidance:
 
 1. Use documentation search tools to understand required resources and modules.
 2. Identify and gather all necessary input variables and configurations.
-3. Generate or update Terraform code following best practices.
+3. Identify all the required modules and their latest stable versions.
+3. Generate or update Terraform code following best practices, Always use latest stable version of terraform aws provider(current version is v6.10.0).
 4. Write Terraform code to disk using the "writeTerraformToDisk" tool. You must provide the directory where the project will be written, ${localProjectDirectory} is the directory where you need to write all the terraform code.
 5. Use ExecuteTerraformCommand to initialize (init), validate (validate), and plan (plan) infrastructure changes.
 6. Use RunCheckovScan to ensure code security and compliance.
@@ -128,6 +129,7 @@ When executing the "ExecuteTerraformCommand" tool, always specify the working_di
 Follow the recommended workflow order: documentation → code generation → init → validate → scan.
 Use resources for guidance and listings as needed.
 Provide robust error handling and clear explanations for all actions.
+When using existing terraform modules make sure to use latest available stable version of that module
 IMPORTANT: Never use plan, apply OR destroy command, even if explicitly asked in user prompt.
 
 IMPORTANT FOR OUTPUT:

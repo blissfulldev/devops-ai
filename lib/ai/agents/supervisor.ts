@@ -1,17 +1,4 @@
-import {
-  streamText,
-  stepCountIs,
-  smoothStream,
-  type UIMessageStreamWriter,
-  type UIMessagePart,
-} from 'ai';
-import { myProvider } from '@/lib/ai/providers';
-import type {
-  CustomUIDataTypes,
-  ChatTools,
-  ClarificationResponse,
-} from '@/lib/types';
-import { isProductionEnvironment } from '@/lib/constants';
+import type { UIMessageStreamWriter } from 'ai';
 import type { ChatMessage } from '@/lib/types';
 import type { ChatModel } from '@/lib/ai/models';
 import type { AgentRunner } from './types';
@@ -20,8 +7,13 @@ import { runTerraformAgent } from './terraform';
 import { runCoreAgent } from './core';
 import { ConversationStateManager, AgentStatus } from '../conversation-state';
 import type { Session } from 'next-auth';
-import { supervisorSystemPrompt } from './system-prompts';
 import type { AgentWorkflowState } from '../conversation-state';
+import {
+  stringifyError,
+  sleep,
+  notifyUI,
+  buildAugmentedUIMessages,
+} from './utils';
 
 type RunSupervisorAgentParams = {
   selectedChatModel: ChatModel['id'];
@@ -50,72 +42,6 @@ export function runSupervisorAgent({
   telemetryId = 'supervisor-orchestrator',
   chatId,
 }: RunSupervisorAgentParams) {
-  // Helper: normalize clarification response text from different shapes
-  function getClarificationAnswer(resp: ClarificationResponse | any): string {
-    if (!resp) return '[No answer provided]';
-    return (
-      resp.answer ??
-      resp.response ??
-      resp.text ??
-      resp.value ??
-      resp.answerText ??
-      '[No answer provided]'
-    );
-  }
-
-  // Helper: small sleep to allow streams to flush and avoid token interleaving
-  const sleep = (ms: number) => new Promise((res) => setTimeout(res, ms));
-
-  // Helper: stringify unknown errors safely
-  function stringifyError(err: unknown): string {
-    if (err instanceof Error) {
-      return err.stack ?? err.message ?? String(err);
-    }
-    try {
-      return JSON.stringify(err);
-    } catch {
-      return String(err);
-    }
-  }
-
-  // Outer notifier helper — renamed to avoid shadowing with class method
-  function notifyUI(text: string) {
-    try {
-      const notifier = streamText({
-        model: myProvider.languageModel(selectedChatModel),
-        system:
-          'SYSTEM NOTE: You are a notifier. Reply with exactly the content given in the user message as a single assistant message and do NOT call any tools or add commentary.',
-        messages: [{ role: 'user', content: text }],
-        stopWhen: stepCountIs(1),
-        experimental_transform: smoothStream({ chunking: 'word' }),
-        experimental_telemetry: {
-          isEnabled: isProductionEnvironment,
-          functionId: telemetryId
-            ? `${telemetryId}-notifier`
-            : 'supervisor-notifier',
-        },
-      });
-
-      try {
-        dataStream.merge(notifier.toUIMessageStream({ sendReasoning: false }));
-      } catch (err) {
-        console.error(
-          'Error merging notifier stream into dataStream:',
-          stringifyError(err),
-        );
-      }
-
-      notifier.consumeStream().catch((err) => {
-        console.error('Notifier stream error:', stringifyError(err));
-      });
-    } catch (err) {
-      console.error(
-        'Failed to push UI notice via notifier stream:',
-        stringifyError(err),
-      );
-    }
-  }
-
   // Supervisor orchestrator class (explicitly receives session)
   class SupervisorOrchestrator {
     constructor(
@@ -124,6 +50,7 @@ export function runSupervisorAgent({
       private dataStream: UIMessageStreamWriter<ChatMessage>,
       private chatId: string,
       private session: Session,
+      private telemetryId: string,
     ) {}
 
     toUIMessageStream() {
@@ -209,14 +136,10 @@ export function runSupervisorAgent({
             this.log(
               `Resuming ${agentName} after clarifications as pausedAgent`,
             );
-            // allowed to continue and set currentAgent below
           } else {
-            // Not the right time to start/resume this agent
             this.log(
               `Not resuming ${agentName}. pausedAgent=${pausedAgent}, stillWaiting=${stillWaiting}`,
             );
-            // If there is a pausedAgent different from this agent, skip and continue to next iteration
-            // (do not start a new instance)
             continue;
           }
         }
@@ -322,35 +245,10 @@ export function runSupervisorAgent({
     }
 
     buildAugmentedUIMessages(): ChatMessage[] {
-      const rawClarResponses =
-        ConversationStateManager.getAllClarificationResponses(this.chatId) ||
-        [];
-      const clarificationResponses = rawClarResponses.filter(
-        Boolean,
-      ) as ClarificationResponse[];
-
-      return [
-        ...this.uiMessages,
-        ...(clarificationResponses
-          .map((r) => {
-            if (!r || typeof r !== 'object') return null;
-            const answerText = getClarificationAnswer(r);
-            return {
-              id: r.id ?? `clar-${Math.random().toString(36).slice(2)}`,
-              role: 'user' as const,
-              parts: [
-                {
-                  type: 'text',
-                  text: `Clarification response: ${answerText}`,
-                } as UIMessagePart<CustomUIDataTypes, ChatTools>,
-              ],
-              metadata: {
-                createdAt: (r.timestamp as string) ?? new Date().toISOString(),
-              },
-            } as ChatMessage;
-          })
-          .filter(Boolean) as ChatMessage[]),
-      ];
+      return buildAugmentedUIMessages({
+        chatId: this.chatId,
+        uiMessages: this.uiMessages,
+      });
     }
 
     runAgent(
@@ -387,9 +285,6 @@ export function runSupervisorAgent({
       if (waiting && pendingAfter > 0) {
         // Ensure pausedAgent is set (idempotent)
         ConversationStateManager.setPausedAgent(this.chatId, agentName);
-        // this.pushUiNotice(
-        //   `Agent ${agentName} has asked for ${pendingAfter} clarification(s). Workflow is paused until the user answers.`,
-        // );
         return true;
       }
       return false;
@@ -405,58 +300,26 @@ export function runSupervisorAgent({
     }
 
     markWorkflowCompleted() {
-      try {
-        // proper write
-        ConversationStateManager.updateState(this.chatId, (s) => {
-          ConversationStateManager.getState(this.chatId).workflowPhase =
-            s.workflowPhase;
-          s.workflowPhase = s.workflowPhase ?? s.workflowPhase;
-        });
-        // Simpler, actually set it:
-        ConversationStateManager.updateState(this.chatId, (s) => {
-          s.workflowPhase = s.workflowPhase = (s.workflowPhase ??
-            'completed') as any;
-        });
-        // Finally correct set:
-        ConversationStateManager.updateState(this.chatId, (s) => {
-          s.workflowPhase = s.workflowPhase = (
-            typeof s.workflowPhase === 'string'
-              ? (s.workflowPhase as any)
-              : 'completed'
-          ) as any;
-        });
-        // To avoid the above confusion, set to completed directly:
-        ConversationStateManager.updateState(this.chatId, (s) => {
-          s.workflowPhase = 'completed' as any;
-        });
-      } catch (err) {
-        // fallback — set via safe small update
-        try {
-          ConversationStateManager.updateState(this.chatId, (s) => {
-            s.workflowPhase = 'completed' as any;
-          });
-        } catch (e) {
-          console.error(
-            'Error setting workflow to completed:',
-            stringifyError(e),
-          );
-        }
-      }
-      // Simpler reliable call: set directly
+      this.log('Workflow marked as completed.');
       try {
         ConversationStateManager.updateState(this.chatId, (s) => {
           s.workflowPhase = 'completed' as any;
         });
       } catch (err) {
         console.error(
-          'Error setting workflow to completed (final attempt):',
+          'Error setting workflow to completed:',
           stringifyError(err),
         );
       }
     }
 
     pushUiNotice(text: string) {
-      notifyUI(text);
+      notifyUI({
+        text,
+        selectedChatModel: this.selectedChatModel,
+        dataStream: this.dataStream,
+        telemetryId: this.telemetryId,
+      });
     }
 
     log(...args: any[]) {
@@ -471,6 +334,7 @@ export function runSupervisorAgent({
     dataStream,
     chatId,
     session,
+    telemetryId,
   );
   return {
     toUIMessageStream: () => orchestrator.toUIMessageStream(),

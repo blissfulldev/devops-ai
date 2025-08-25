@@ -11,8 +11,6 @@ import { isProductionEnvironment } from '@/lib/constants';
 import type { AgentRunner } from './types';
 import { terraformSystemPrompt } from './system-prompts';
 import { sanitizeUIMessages } from '@/lib/utils';
-import { createDocument } from '../tools/create-document';
-import { updateDocument } from '../tools/update-document';
 import { mkdirSync } from 'node:fs';
 import { writeTerraformToDisk } from '../tools/write-terraform-to-disk';
 
@@ -60,10 +58,8 @@ export const runTerraformAgent: AgentRunner = ({
           chatId: chatId as string,
         }),
         writeTerraformToDisk: writeTerraformToDisk(actualProjectRoot),
-        // createDocument: createDocument({ session, dataStream }),
-        // updateDocument: updateDocument({ session, dataStream }),
       },
-      stopWhen: stepCountIs(12), // Allow enough steps: analyze + generate + write + validate + retry + finalize
+      stopWhen: stepCountIs(30),
       experimental_transform: smoothStream({ chunking: 'word' }),
       experimental_telemetry: {
         isEnabled: isProductionEnvironment,
