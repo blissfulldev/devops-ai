@@ -11,8 +11,6 @@ import { isProductionEnvironment } from '@/lib/constants';
 import type { AgentRunner } from './types';
 import { coreSystemPrompt } from './system-prompts';
 import { sanitizeUIMessages } from '@/lib/utils';
-import { createDocument } from '../tools/create-document';
-import { updateDocument } from '../tools/update-document';
 
 export const runCoreAgent: AgentRunner = ({
   selectedChatModel,
@@ -31,7 +29,7 @@ export const runCoreAgent: AgentRunner = ({
         ...convertToModelMessages(sanitizeUIMessages(uiMessages)),
         { role: 'user', content: input },
       ],
-      stopWhen: stepCountIs(5), // Allow enough steps: analyze + clarify + use tools + generate prompt + finalize
+      stopWhen: stepCountIs(5),
       tools: {
         ...mcpTools.core,
         requestClarification: requestClarification({
@@ -39,8 +37,6 @@ export const runCoreAgent: AgentRunner = ({
           agentName: 'core_agent',
           chatId: chatId as string,
         }),
-        // createDocument: createDocument({ session, dataStream }),
-        // updateDocument: updateDocument({ session, dataStream }),
       },
       experimental_transform: smoothStream({ chunking: 'word' }),
       experimental_telemetry: {
