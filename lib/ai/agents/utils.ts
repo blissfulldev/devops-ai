@@ -124,3 +124,31 @@ export function buildAugmentedUIMessages({
 
   return [...uiMessages, ...clarificationMessages];
 }
+
+/**
+ * The Gemini API requires tool call arguments to be a JSON object (Struct).
+ * However, the model sometimes returns arguments as a stringified JSON object.
+ * This function iterates through chat messages and parses any stringified `args`
+ * in tool calls to prevent API errors.
+ * @param messages - The array of ChatMessage objects.
+ * @returns A new array of ChatMessage objects with tool call args fixed.
+ */
+export function fixToolCallArgs(messages: ChatMessage[]): ChatMessage[] {
+  return messages.map((msg) => {
+    if (msg.role === 'assistant' && Array.isArray(msg.parts)) {
+      const newParts = msg.parts.map((part) => {
+        if (part.type === 'tool-call' && typeof part.args === 'string') {
+          try {
+            return { ...part, args: JSON.parse(part.args) };
+          } catch (e) {
+            console.warn('Could not parse tool-call args string:', part.args);
+            return part; // Return original part if parsing fails
+          }
+        }
+        return part;
+      });
+      return { ...msg, parts: newParts };
+    }
+    return msg;
+  });
+}

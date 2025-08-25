@@ -239,9 +239,9 @@ export function runSupervisorAgent({
 
       // All agents done -> mark workflow completed
       this.markWorkflowCompleted();
-      this.pushUiNotice(
-        'Workflow completed: core_agent, diagram_agent, terraform_agent have run successfully.',
-      );
+      // this.pushUiNotice(
+      //   'Workflow completed: core_agent, diagram_agent, terraform_agent have run successfully.',
+      // );
     }
 
     buildAugmentedUIMessages(): ChatMessage[] {

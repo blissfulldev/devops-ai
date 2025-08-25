@@ -12,6 +12,7 @@ import { isProductionEnvironment } from '@/lib/constants';
 import type { AgentRunner } from './types';
 import { diagramSystemPrompt } from './system-prompts';
 import { sanitizeUIMessages } from '@/lib/utils';
+import { fixToolCallArgs } from './utils';
 import type { ChatMessage } from '@/lib/types';
 import type { Session } from 'next-auth';
 import * as fs from 'node:fs/promises';
@@ -40,10 +41,12 @@ export const runDiagramAgent: AgentRunner = ({
     system: diagramSystemPrompt(chatId ?? 'default-diagram'),
 
     messages: [
-      ...convertToModelMessages(sanitizeUIMessages(uiMessages)),
+      ...convertToModelMessages(
+        fixToolCallArgs(sanitizeUIMessages(uiMessages)),
+      ),
       { role: 'user', content: input },
     ],
-    stopWhen: stepCountIs(8),
+    stopWhen: stepCountIs(15),
     tools: {
       ...diagramTools,
       requestClarification: requestClarification({
@@ -73,4 +76,3 @@ export const runDiagramAgent: AgentRunner = ({
 
   return child;
 };
-

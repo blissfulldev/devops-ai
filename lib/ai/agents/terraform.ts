@@ -13,6 +13,7 @@ import { terraformSystemPrompt } from './system-prompts';
 import { sanitizeUIMessages } from '@/lib/utils';
 import { mkdirSync } from 'node:fs';
 import { writeTerraformToDisk } from '../tools/write-terraform-to-disk';
+import { fixToolCallArgs } from './utils';
 
 export const runTerraformAgent: AgentRunner = ({
   selectedChatModel,
@@ -47,7 +48,9 @@ export const runTerraformAgent: AgentRunner = ({
         ? promptWithProjectRoot
         : `${promptWithProjectRoot}\n\nNOTE: Some Terraform tools are currently unavailable. Focus on generating Terraform code using your knowledge.`,
       messages: [
-        ...convertToModelMessages(sanitizeUIMessages(uiMessages)),
+        ...convertToModelMessages(
+          fixToolCallArgs(sanitizeUIMessages(uiMessages)),
+        ),
         { role: 'user', content: input },
       ],
       tools: {
@@ -70,21 +73,5 @@ export const runTerraformAgent: AgentRunner = ({
     return child;
   } catch (err) {
     console.error('Error creating terraform agent stream:', err);
-    return streamText({
-      model: myProvider.languageModel(selectedChatModel),
-      system:
-        'You are having technical difficulties. Explain that terraform generation is temporarily unavailable.',
-      messages: [
-        {
-          role: 'user',
-          content:
-            'Terraform generation is currently experiencing technical difficulties. Please try again later.',
-        },
-      ],
-      experimental_telemetry: {
-        isEnabled: isProductionEnvironment,
-        functionId: `${telemetryId}-fallback`,
-      },
-    });
   }
 };
